@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import json; d=json.load\\(open\\(''e:/git/vscode_inject/accounts/codex_regenamull6808400.json''\\)\\); print\\(''ext:'', d.get\\(''ext''\\)\\); [print\\('' '', e[''key'']\\) for e in d.get\\(''entries'',[]\\)]\")"
+    ]
+  }
+}

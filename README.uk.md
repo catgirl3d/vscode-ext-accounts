@@ -17,6 +17,8 @@ pip install cryptography
 python gui.py
 ```
 
+![VSCode Account Manager](1.png)
+
 GUI надає:
 - **Save current** — зберегти поточний акаунт з VSCode під іменем
 - **Import Codex** — імпортувати OAuth-токен з `~/.codex/auth.json`

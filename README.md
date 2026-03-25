@@ -17,6 +17,8 @@ pip install cryptography
 python gui.py
 ```
 
+![VSCode Account Manager](1.png)
+
 The GUI provides:
 - **Save current** — save the active VSCode account under a name
 - **Import Codex** — import an OAuth token from `~/.codex/auth.json`
