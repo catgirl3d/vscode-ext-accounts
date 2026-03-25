@@ -1,4 +1,4 @@
-# vscode_inject
+# vscode-ext-accounts
 
 [🇺🇦 Українська](README.uk.md)
 
