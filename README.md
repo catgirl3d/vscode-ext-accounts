@@ -1,92 +1,94 @@
 # vscode_inject
 
-Утилита для управления аккаунтами VSCode-расширений (Kilocode, Roo-Cline).
-Читает и пишет секреты из `state.vscdb`, поддерживает расшифровку v10 AES-256-GCM (Windows DPAPI).
+[🇺🇦 Українська](README.uk.md)
 
-## Требования
+A utility for managing VSCode extension accounts (Kilocode, Roo-Cline).
+Reads and writes secrets from `state.vscdb` with v10 AES-256-GCM decryption (Windows DPAPI).
+
+## Requirements
 
 ```bash
 pip install cryptography
 ```
 
-## Запуск GUI
+## GUI
 
 ```bash
 python gui.py
 ```
 
-GUI позволяет:
-- **Save current** — сохранить текущий аккаунт из VSCode под именем
-- **Import Codex** — импортировать OAuth-токен из `~/.codex/auth.json`
-- **Use selected** — применить сохранённый аккаунт (VSCode должен быть закрыт)
-- **Delete** — удалить сохранённый аккаунт
+The GUI provides:
+- **Save current** — save the active VSCode account under a name
+- **Import Codex** — import an OAuth token from `~/.codex/auth.json`
+- **Use selected** — apply a saved account (VSCode must be closed)
+- **Delete** — remove a saved account
 
-Переключатель **Extension** (вверху) задаёт для какого расширения сохранять/применять:
-- **Both** — оба расширения сразу
-- **Kilocode** — только `kilocode.kilo-code`
-- **Roo-Cline** — только `rooveterinaryinc.roo-cline`
+The **Extension** selector at the top controls which extension to target:
+- **Both** — both extensions at once
+- **Kilocode** — only `kilocode.kilo-code`
+- **Roo-Cline** — only `rooveterinaryinc.roo-cline`
 
-> **Cross-extension:** если аккаунт сохранён для одного расширения (например Roo),
-> его можно применить для другого (Kilocode) — токен будет автоматически переписан в нужный слот.
+> **Cross-extension:** if an account was saved for one extension (e.g. Roo),
+> it can be applied to another (Kilocode) — the token is automatically remapped to the correct slot.
 
 ## CLI
 
-### Аккаунты
+### Account management
 
 ```bash
-# Сохранить текущий аккаунт
+# Save current account
 python parse_vscdb.py --save-account work
 
-# Применить сохранённый аккаунт (VSCode должен быть закрыт)
+# Apply a saved account (VSCode must be closed)
 python parse_vscdb.py --use-account work
 
-# Список сохранённых аккаунтов
+# List saved accounts
 python parse_vscdb.py --list-accounts
 
-# Импорт из ~/.codex/auth.json
+# Import from ~/.codex/auth.json
 python parse_vscdb.py --import-codex auth.json --name work
 python parse_vscdb.py --import-codex auth.json --name work --ext kilocode
 ```
 
-`--ext` принимает: `kilocode`, `roo-cline` (по умолчанию — оба).
+`--ext` accepts: `kilocode`, `roo-cline` (default: both).
 
-### Бэкап / Restore
+### Backup / Restore
 
 ```bash
-# Бэкап всех секретов в JSON
+# Backup all secrets to JSON
 python parse_vscdb.py --backup
 python parse_vscdb.py --backup my_backup.json
 
-# Восстановить из бэкапа
+# Restore from backup
 python parse_vscdb.py --restore my_backup.json
 python parse_vscdb.py --restore my_backup.json --key openai-codex-oauth-credentials
 ```
 
-### Просмотр
+### Inspect
 
 ```bash
-# Вывод всех найденных секретов в терминал
+# Print all found secrets to terminal
 python parse_vscdb.py
 
-# Экспорт ключей по паттерну
+# Export keys matching a pattern
 python parse_vscdb.py --get openai-codex-oauth-credentials
 python parse_vscdb.py --get kilocode --out kilocode_profile.json
 ```
 
-## Где лежит state.vscdb
+## Location of state.vscdb
 
 ```
 %APPDATA%\Code\User\globalStorage\state.vscdb
 ```
 
-Ключ шифрования берётся из `%APPDATA%\Code\Local State` через Windows DPAPI — работает только под тем же пользователем Windows.
+The encryption key is read from `%APPDATA%\Code\Local State` via Windows DPAPI — only works under the same Windows user.
 
-## Что хранится в state.vscdb
+## Keys stored in state.vscdb
 
-| Ключ | Содержимое |
-|------|-----------|
-| `openai-codex-oauth-credentials` | OAuth токены ChatGPT Codex (access + refresh) |
+| Key | Contents |
+|-----|---------|
+| `openai-codex-oauth-credentials` | ChatGPT Codex OAuth tokens (access + refresh) |
 | `openAiApiKey` | OpenAI API key |
 | `openRouterApiKey` | OpenRouter API key |
 | `geminiApiKey` | Gemini API key |
-| `roo_cline_config_api_config` | Конфигурация провайдеров Roo-Cline |
+| `roo_cline_config_api_config` | Roo-Cline provider configuration |
