@@ -5,6 +5,28 @@
 A utility for managing VSCode extension accounts (Kilocode, Roo-Cline).
 Reads and writes secrets from `state.vscdb` with v10 AES-256-GCM decryption (Windows DPAPI).
 
+## Use Cases
+
+**Multiple ChatGPT Plus accounts**
+
+You have several paid accounts and want to switch between them in Kilocode or Roo-Cline:
+
+1. Log into [codex.openai.com](https://codex.openai.com) with account A
+2. Open GUI → **Import Codex** → give it a name (e.g. `account_a`)
+3. Log into Codex with account B → **Import Codex** → `account_b`
+4. Close VSCode
+5. Select the account in the list → **Use selected** → open VSCode
+
+**Use one login for both extensions**
+
+You authenticated in Roo-Cline and want the same session in Kilocode (or vice versa):
+
+1. Save the current account: **Save current** (select **Both** or the target extension)
+2. Close VSCode
+3. Select the saved account → set extension to **Kilocode** → **Use selected**
+
+The token is automatically remapped to the correct extension slot even if it was originally saved under a different one.
+
 ## Requirements
 
 ```bash
