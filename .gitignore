@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# Secrets & tokens
+accounts/
+profile_*.json
+openai-codex-oauth-credentials
+vscdb_backup_*.json
+*.db.bak_*
