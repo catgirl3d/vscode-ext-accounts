@@ -45,6 +45,16 @@ def set_status(msg, ok=True):
 
 def refresh_accounts():
     tree.delete(*tree.get_children())
+
+    # Read current active accounts from state.vscdb (safe even if VSCode is running)
+    try:
+        current_accounts = db.read_current_accounts()
+    except Exception:
+        current_accounts = {}
+
+    # Update current-account labels in the top bar
+    _update_current_labels(current_accounts)
+
     d = db._accounts_dir()
     files = sorted(f for f in os.listdir(d) if f.endswith(".json"))
     for f in files:
@@ -65,13 +75,43 @@ def refresh_accounts():
                     if "accountId" in v:
                         account_ids.append(v["accountId"][:8] + "…")
             accounts_short = ", ".join(account_ids) if account_ids else "?"
-            tree.insert("", "end", iid=name, values=(name, ext_tag, accounts_short, saved_at, exp_str))
+
+            # Determine which extension slots this saved account is active in
+            active_in = db.match_saved_to_current(data.get("entries", []), current_accounts)
+            active_str = ", ".join(active_in) if active_in else "—"
+
+            tree.insert("", "end", iid=name,
+                        values=(name, ext_tag, accounts_short, saved_at, exp_str, active_str))
         except Exception:
-            tree.insert("", "end", iid=name, values=(name, "?", "?", "?", "?"))
+            tree.insert("", "end", iid=name,
+                        values=(name, "?", "?", "?", "?", "?"))
 
     vscode_state = "running ⚠" if db.is_vscode_running() else "closed ✓"
     vscode_color = "#c0392b" if db.is_vscode_running() else "#2d8a4e"
     vscode_label.config(text=f"VSCode: {vscode_state}", fg=vscode_color)
+
+
+def _update_current_labels(current_accounts: dict):
+    """Update the 'Current: …' labels below the top bar."""
+    for ext_id, widget in _current_labels.items():
+        info = current_accounts.get(ext_id)
+        if info:
+            aid = info.get("accountId", "?")
+            if isinstance(aid, str) and len(aid) > 12:
+                aid = aid[:12] + "…"
+            exp = info.get("expires")
+            exp_str = ""
+            if exp:
+                try:
+                    exp_dt = datetime.datetime.fromtimestamp(exp / 1000)
+                    exp_str = f"  exp {exp_dt.strftime('%Y-%m-%d')}"
+                except Exception:
+                    pass
+            short = db._EXT_DISPLAY.get(ext_id, ext_id)
+            widget.config(text=f"  {short}: {aid}{exp_str}", fg="#a6e3a1")
+        else:
+            short = db._EXT_DISPLAY.get(ext_id, ext_id)
+            widget.config(text=f"  {short}: —", fg="#6c7086")
 
 
 def selected_name():
@@ -190,19 +230,37 @@ for val, label in [("both", "Both"), ("kilocode", "Kilocode"), ("roo-cline", "Ro
                    bg=BG, fg=FG, selectcolor=BTN_BG, activebackground=BG,
                    activeforeground=FG, font=("Segoe UI", 9)).pack(side="left", padx=4)
 
+# Current accounts display (below top bar)
+current_frame = tk.Frame(root, bg=BG)
+current_frame.pack(fill="x", padx=10, pady=(0, 2))
+
+tk.Label(current_frame, text="Current in VSCode:", bg=BG, fg="#6c7086",
+         font=("Segoe UI", 9, "bold")).pack(side="left")
+
+_current_labels: dict[str, tk.Label] = {}
+for _ext_id in db.EXTENSIONS.values():
+    if _ext_id is None:
+        continue
+    lbl = tk.Label(current_frame, text="", bg=BG, fg="#6c7086",
+                   font=("Segoe UI", 9))
+    lbl.pack(side="left", padx=(8, 0))
+    _current_labels[_ext_id] = lbl
+
 # Tree
-cols = ("name", "ext", "accountIds", "saved", "expires")
+cols = ("name", "ext", "accountIds", "saved", "expires", "active")
 tree = ttk.Treeview(root, columns=cols, show="headings", height=8, selectmode="browse")
 tree.heading("name",       text="Name")
 tree.heading("ext",        text="Ext")
 tree.heading("accountIds", text="Account IDs")
 tree.heading("saved",      text="Saved")
 tree.heading("expires",    text="Expires")
-tree.column("name",       width=120, anchor="w")
-tree.column("ext",        width=80,  anchor="center")
-tree.column("accountIds", width=170, anchor="w")
-tree.column("saved",      width=120, anchor="center")
-tree.column("expires",    width=90,  anchor="center")
+tree.heading("active",     text="Active")
+tree.column("name",       width=110, anchor="w")
+tree.column("ext",        width=70,  anchor="center")
+tree.column("accountIds", width=140, anchor="w")
+tree.column("saved",      width=110, anchor="center")
+tree.column("expires",    width=80,  anchor="center")
+tree.column("active",     width=100, anchor="center")
 tree.pack(padx=10, pady=(0, 6))
 
 # Buttons

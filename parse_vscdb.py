@@ -431,6 +431,9 @@ EXTENSIONS = {
     "roo-cline": "rooveterinaryinc.roo-cline",
 }
 
+# Friendly names for display (reverse lookup by extensionId)
+_EXT_DISPLAY = {v: k for k, v in EXTENSIONS.items() if v is not None}
+
 
 def _accounts_dir() -> str:
     os.makedirs(ACCOUNTS_DIR, exist_ok=True)
@@ -442,6 +445,115 @@ def _ext_filter(ext: str | None) -> str | None:
     if ext is None or ext == "both":
         return None
     return EXTENSIONS.get(ext, ext)
+
+
+# ── Current account detection ─────────────────────────────────────────────────
+
+def account_fingerprint(value) -> str | None:
+    """Compute a stable fingerprint for an OAuth entry.
+
+    Uses SHA-256 of ``refresh_token`` when available, falls back to
+    ``accountId``, returns ``None`` when neither is present.
+    """
+    if not isinstance(value, dict):
+        return None
+    import hashlib
+    rt = value.get("refresh_token")
+    if rt:
+        return hashlib.sha256(rt.encode("utf-8")).hexdigest()
+    aid = value.get("accountId")
+    if aid:
+        return hashlib.sha256(aid.encode("utf-8")).hexdigest()
+    return None
+
+
+def read_current_accounts() -> dict[str, dict]:
+    """Read currently active OAuth accounts from ``state.vscdb``.
+
+    Returns a dict mapping ``extensionId`` → ``{"accountId": ..., "fingerprint": ..., "expires": ...}``.
+    Safe to call while VSCode is running (reads a temp copy).
+    """
+    import shutil, tempfile
+
+    if not os.path.exists(DB_PATH):
+        return {}
+
+    aes_key = get_aes_key()
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    shutil.copy2(DB_PATH, tmp.name)
+
+    con = sqlite3.connect(tmp.name)
+    result: dict[str, dict] = {}
+
+    for key, value in con.execute("SELECT key, value FROM ItemTable ORDER BY key"):
+        if OAUTH_KEY not in key:
+            continue
+
+        # Extract extensionId from key like: secret://{"extensionId":"...","key":"..."}
+        try:
+            payload_str = key[len("secret://"):]
+            payload = json.loads(payload_str)
+            ext_id = payload.get("extensionId", "")
+        except Exception:
+            ext_id = ""
+
+        decoded = _decode_entry(value, aes_key)
+        try:
+            decoded_parsed = json.loads(decoded)
+        except Exception:
+            decoded_parsed = decoded
+
+        if isinstance(decoded_parsed, dict):
+            info: dict = {
+                "accountId": decoded_parsed.get("accountId", "?"),
+                "fingerprint": account_fingerprint(decoded_parsed),
+                "expires": decoded_parsed.get("expires"),
+            }
+            if ext_id:
+                result[ext_id] = info
+
+    con.close()
+    os.unlink(tmp.name)
+    return result
+
+
+def match_saved_to_current(
+    saved_entries: list[dict],
+    current_accounts: dict[str, dict],
+) -> list[str]:
+    """Return list of extension shortnames where *saved_entries* match current DB state.
+
+    Compares by fingerprint (SHA-256 of refresh_token) with accountId fallback.
+    """
+    matched: list[str] = []
+
+    for entry in saved_entries:
+        key = entry.get("key", "")
+        value = entry.get("value", {})
+
+        # Determine which extension slot this entry targets
+        try:
+            payload_str = key[len("secret://"):]
+            payload = json.loads(payload_str)
+            ext_id = payload.get("extensionId", "")
+        except Exception:
+            ext_id = ""
+
+        current = current_accounts.get(ext_id)
+        if not current:
+            continue
+
+        saved_fp = account_fingerprint(value)
+        cur_fp = current.get("fingerprint")
+
+        if saved_fp and cur_fp and saved_fp == cur_fp:
+            short = _EXT_DISPLAY.get(ext_id, ext_id)
+            if short not in matched:
+                matched.append(short)
+
+    return matched
 
 
 def save_account(name: str, ext: str | None = None):
