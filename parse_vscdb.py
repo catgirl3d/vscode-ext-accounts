@@ -11,8 +11,31 @@ import base64
 import struct
 import datetime
 
-DB_PATH = os.path.expandvars(r"%APPDATA%\Code\User\globalStorage\state.vscdb")
-LOCAL_STATE_PATH = os.path.expandvars(r"%APPDATA%\Code\Local State")
+IDE_PATHS = {
+    "vscode": {
+        "label": "VSCode",
+        "db": os.path.expandvars(r"%APPDATA%\Code\User\globalStorage\state.vscdb"),
+        "local_state": os.path.expandvars(r"%APPDATA%\Code\Local State"),
+        "process": "Code.exe",
+    },
+    "antigravity": {
+        "label": "Antigravity",
+        "db": os.path.expandvars(r"%APPDATA%\Antigravity\User\globalStorage\state.vscdb"),
+        "local_state": os.path.expandvars(r"%APPDATA%\Antigravity\Local State"),
+        "process": "Antigravity.exe",
+    },
+}
+CURRENT_IDE = "vscode"
+DB_PATH = IDE_PATHS["vscode"]["db"]
+LOCAL_STATE_PATH = IDE_PATHS["vscode"]["local_state"]
+
+
+def set_ide(name: str):
+    global DB_PATH, LOCAL_STATE_PATH, CURRENT_IDE
+    cfg = IDE_PATHS[name]
+    DB_PATH = cfg["db"]
+    LOCAL_STATE_PATH = cfg["local_state"]
+    CURRENT_IDE = name
 
 SEARCH_KEYS = [
     "kilocode", "kilo-code", "kilo_code",
@@ -23,10 +46,10 @@ SEARCH_KEYS = [
 
 # ── Decryption ────────────────────────────────────────────────────────────────
 
-def get_aes_key():
+def get_aes_key(local_state_path: str | None = None):
     """Read encrypted_key from Local State and decrypt with DPAPI."""
     try:
-        with open(LOCAL_STATE_PATH, "r", encoding="utf-8") as f:
+        with open(local_state_path or LOCAL_STATE_PATH, "r", encoding="utf-8") as f:
             local_state = json.load(f)
         enc_key_b64 = local_state["os_crypt"]["encrypted_key"]
         enc_key = base64.b64decode(enc_key_b64)
@@ -165,20 +188,26 @@ def main():
         print()
 
 
-def is_vscode_running() -> bool:
-    """Check if any VSCode process is currently running."""
+def is_ide_running(ide: str | None = None) -> bool:
+    """Check if the given IDE process is currently running."""
     import subprocess
+    process = IDE_PATHS[ide or CURRENT_IDE]["process"]
     result = subprocess.run(
-        ["tasklist", "/FI", "IMAGENAME eq Code.exe", "/NH", "/FO", "CSV"],
+        ["tasklist", "/FI", f"IMAGENAME eq {process}", "/NH", "/FO", "CSV"],
         capture_output=True, text=True
     )
-    return "Code.exe" in result.stdout
+    return process in result.stdout
+
+
+def is_vscode_running() -> bool:
+    return is_ide_running()
 
 
 def guard_vscode_closed():
-    """Exit with error if VSCode is running."""
-    if is_vscode_running():
-        print("ERROR: VSCode is running. Close it before making changes to state.vscdb.")
+    """Exit with error if the current IDE is running."""
+    if is_ide_running():
+        label = IDE_PATHS[CURRENT_IDE]["label"]
+        print(f"ERROR: {label} is running. Close it before making changes.")
         sys.exit(1)
 
 
@@ -252,7 +281,7 @@ def get_key(pattern: str, out_path: str | None = None):
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(profile, f, indent=2, ensure_ascii=False)
 
-    print(f"Saved {len(matched)} key(s) → {out_path}")
+    print(f"Saved {len(matched)} key(s) ->{out_path}")
     for e in matched:
         print(f"  {e['key']}")
 
@@ -314,8 +343,8 @@ def restore(backup_path: str, key_filter: str | None = None):
         value = entry["value"]
 
         # Determine how the value was originally stored:
-        # secret:// keys → Buffer-wrapped encrypted bytes
-        # plain keys → JSON string or plain string
+        # secret:// keys ->Buffer-wrapped encrypted bytes
+        # plain keys ->JSON string or plain string
         is_secret = key.startswith("secret://")
 
         if is_secret:
@@ -423,12 +452,15 @@ def backup(out_path: str | None = None):
 
 ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts")
 OAUTH_KEY = "openai-codex-oauth-credentials"
+KILO_AUTH_PATH = os.path.join(os.path.expanduser("~"), ".local", "share", "kilo", "auth.json")
+KILO_NEW_KEY = "kilo-new://openai"
 
-# Known extension slots
+# Known extension slots ("kilo-new" uses file-based auth, not state.vscdb)
 EXTENSIONS = {
-    "both":     None,
-    "kilocode": "kilocode.kilo-code",
+    "both":      None,
+    "kilocode":  "kilocode.kilo-code",
     "roo-cline": "rooveterinaryinc.roo-cline",
+    "kilo-new":  KILO_NEW_KEY,
 }
 
 # Friendly names for display (reverse lookup by extensionId)
@@ -447,18 +479,69 @@ def _ext_filter(ext: str | None) -> str | None:
     return EXTENSIONS.get(ext, ext)
 
 
+def _is_kilo_new(ext_sub: str | None) -> bool:
+    return ext_sub == KILO_NEW_KEY
+
+
+# ── Kilo New (auth.json) helpers ──────────────────────────────────────────────
+
+def _read_kilo_auth() -> dict:
+    if not os.path.exists(KILO_AUTH_PATH):
+        return {}
+    with open(KILO_AUTH_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_kilo_auth(data: dict):
+    os.makedirs(os.path.dirname(KILO_AUTH_PATH), exist_ok=True)
+    with open(KILO_AUTH_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _to_kilo_new_format(value: dict) -> dict:
+    """Convert internal (old-style) token format to kilo auth.json format."""
+    return {
+        "type": "oauth",
+        "access":    value.get("access_token") or value.get("access", ""),
+        "refresh":   value.get("refresh_token") or value.get("refresh", ""),
+        "expires":   value.get("expires", 0),
+        "accountId": value.get("accountId", ""),
+    }
+
+
+def _from_kilo_new_format(value: dict) -> dict:
+    """Convert kilo auth.json format to internal (old-style) token format."""
+    return {
+        "type":          "openai-codex",
+        "access_token":  value.get("access", ""),
+        "refresh_token": value.get("refresh", ""),
+        "expires":       value.get("expires", 0),
+        "accountId":     value.get("accountId", ""),
+    }
+
+
+def get_kilo_new_fingerprint() -> str | None:
+    """SHA-256 of the refresh token currently in kilo auth.json."""
+    import hashlib
+    auth = _read_kilo_auth()
+    refresh = auth.get("openai", {}).get("refresh")
+    if not refresh:
+        return None
+    return hashlib.sha256(refresh.encode()).hexdigest()
+
+
 # ── Current account detection ─────────────────────────────────────────────────
 
 def account_fingerprint(value) -> str | None:
     """Compute a stable fingerprint for an OAuth entry.
 
-    Uses SHA-256 of ``refresh_token`` when available, falls back to
-    ``accountId``, returns ``None`` when neither is present.
+    Handles both old format (refresh_token) and kilo-new format (refresh).
+    Falls back to accountId, returns None when neither is present.
     """
     if not isinstance(value, dict):
         return None
     import hashlib
-    rt = value.get("refresh_token")
+    rt = value.get("refresh_token") or value.get("refresh")
     if rt:
         return hashlib.sha256(rt.encode("utf-8")).hexdigest()
     aid = value.get("accountId")
@@ -467,22 +550,23 @@ def account_fingerprint(value) -> str | None:
     return None
 
 
-def read_current_accounts() -> dict[str, dict]:
+def read_current_accounts(db_path: str | None = None, local_state_path: str | None = None) -> dict[str, dict]:
     """Read currently active OAuth accounts from ``state.vscdb``.
 
-    Returns a dict mapping ``extensionId`` → ``{"accountId": ..., "fingerprint": ..., "expires": ...}``.
+    Returns a dict mapping ``extensionId`` ->``{"accountId": ..., "fingerprint": ..., "expires": ...}``.
     Safe to call while VSCode is running (reads a temp copy).
     """
     import shutil, tempfile
 
-    if not os.path.exists(DB_PATH):
+    _db = db_path or DB_PATH
+    if not os.path.exists(_db):
         return {}
 
-    aes_key = get_aes_key()
+    aes_key = get_aes_key(local_state_path)
 
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
-    shutil.copy2(DB_PATH, tmp.name)
+    shutil.copy2(_db, tmp.name)
 
     con = sqlite3.connect(tmp.name)
     result: dict[str, dict] = {}
@@ -556,38 +640,54 @@ def match_saved_to_current(
     return matched
 
 
+def read_current_accounts_for_ide(ide: str) -> dict[str, dict]:
+    """Read active OAuth accounts from a specific IDE's state.vscdb."""
+    cfg = IDE_PATHS[ide]
+    return read_current_accounts(cfg["db"], cfg["local_state"])
+
+
 def save_account(name: str, ext: str | None = None):
     """Save current openai-codex-oauth-credentials as a named account.
-    ext: 'kilocode', 'roo-cline', or None (both).
+    ext: 'kilocode', 'roo-cline', 'kilo-new', or None (both).
     """
     import shutil, tempfile
-    aes_key = get_aes_key()
     ext_sub = _ext_filter(ext)
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    shutil.copy2(DB_PATH, tmp.name)
-    con = sqlite3.connect(tmp.name)
-
     entries = []
-    for key, value in con.execute("SELECT key, value FROM ItemTable ORDER BY key"):
-        if OAUTH_KEY not in key:
-            continue
-        if ext_sub and ext_sub not in key:
-            continue
-        decoded = _decode_entry(value, aes_key)
-        try:
-            decoded_parsed = json.loads(decoded)
-        except Exception:
-            decoded_parsed = decoded
-        entries.append({"key": key, "value": decoded_parsed})
 
-    con.close()
-    os.unlink(tmp.name)
+    # kilo-new: read from auth.json
+    if _is_kilo_new(ext_sub):
+        kilo_auth = _read_kilo_auth()
+        openai_entry = kilo_auth.get("openai")
+        if not openai_entry:
+            print("No 'openai' entry found in kilo auth.json.")
+            sys.exit(1)
+        entries.append({"key": KILO_NEW_KEY, "value": _from_kilo_new_format(openai_entry)})
+    else:
+        # state.vscdb based extensions
+        aes_key = get_aes_key()
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        shutil.copy2(DB_PATH, tmp.name)
+        con = sqlite3.connect(tmp.name)
 
-    if not entries:
-        print(f"No {OAUTH_KEY} entries found{' for ' + ext if ext else ''}.")
-        sys.exit(1)
+        for key, value in con.execute("SELECT key, value FROM ItemTable ORDER BY key"):
+            if OAUTH_KEY not in key:
+                continue
+            if ext_sub and ext_sub not in key:
+                continue
+            decoded = _decode_entry(value, aes_key)
+            try:
+                decoded_parsed = json.loads(decoded)
+            except Exception:
+                decoded_parsed = decoded
+            entries.append({"key": key, "value": decoded_parsed})
+
+        con.close()
+        os.unlink(tmp.name)
+
+        if not entries:
+            print(f"No {OAUTH_KEY} entries found{' for ' + ext if ext else ''}.")
+            sys.exit(1)
 
     out = os.path.join(_accounts_dir(), f"{name}.json")
     with open(out, "w", encoding="utf-8") as f:
@@ -598,7 +698,7 @@ def save_account(name: str, ext: str | None = None):
             "entries": entries,
         }, f, indent=2, ensure_ascii=False)
 
-    print(f"Account '{name}' saved [{ext or 'both'}] → {out}")
+    print(f"Account '{name}' saved [{ext or 'both'}] ->{out}")
     for e in entries:
         v = e["value"]
         if isinstance(v, dict):
@@ -621,31 +721,50 @@ def use_account(name: str, ext: str | None = None):
 
     ext_sub = _ext_filter(ext)
 
-    if ext_sub is None:
-        restore(path, key_filter=None)
-        return
-
     with open(path, "r", encoding="utf-8") as f:
         account_data = json.load(f)
 
     entries = account_data.get("entries", [])
-    matching = [e for e in entries if ext_sub in e["key"]]
-
-    if matching:
-        restore(path, key_filter=ext_sub)
-        return
-
-    # Cross-extension: target ext not in account — remap from whatever is available
     source = next(iter(entries), None)
     if not source:
         print(f"No entries in account '{name}'.")
         sys.exit(1)
 
-    print(f"[cross-ext] No '{ext_sub}' key found — remapping from: {source['key']}")
-    new_key = f'secret://{{"extensionId":"{ext_sub}","key":"{OAUTH_KEY}"}}'
-    remapped = {**account_data, "entries": [{"key": new_key, "value": source["value"]}]}
+    # ── kilo-new: write to auth.json, check Antigravity is closed ────────────
+    if _is_kilo_new(ext_sub):
+        if is_ide_running("antigravity"):
+            print("ERROR: Antigravity is running. Close it before switching accounts.")
+            sys.exit(1)
+        value = source["value"]
+        new_entry = _to_kilo_new_format(value)
+        kilo_auth = _read_kilo_auth()
+        kilo_auth["openai"] = new_entry
+        _write_kilo_auth(kilo_auth)
+        print(f"[kilo-new] Written to {KILO_AUTH_PATH}")
+        print(f"  accountId: {new_entry.get('accountId', '?')}")
+        return
+
+    # ── DB-based extensions (kilocode / roo-cline / both) ────────────────────
+    # Build full set of target extension IDs (skip kilo-new)
+    db_ext_ids = [eid for eid in EXTENSIONS.values() if eid and not _is_kilo_new(eid)]
+    if ext_sub is None:
+        target_ids = db_ext_ids
+    else:
+        target_ids = [ext_sub]
+
+    # For each target, use existing entry if present, otherwise remap from source
+    remapped_entries = []
+    for eid in target_ids:
+        existing = next((e for e in entries if eid in e["key"]), None)
+        if existing:
+            remapped_entries.append(existing)
+        else:
+            print(f"[cross-ext] No '{eid}' key — remapping from: {source['key']}")
+            new_key = f'secret://{{"extensionId":"{eid}","key":"{OAUTH_KEY}"}}'
+            remapped_entries.append({"key": new_key, "value": source["value"]})
 
     import tempfile
+    remapped = {**account_data, "entries": remapped_entries}
     tmp_path = tempfile.mktemp(suffix=".json")
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -746,7 +865,7 @@ def import_codex_auth(auth_path: str, name: str, ext: str | None = None):
         }, f, indent=2, ensure_ascii=False)
 
     exp_dt = datetime.datetime.fromtimestamp(expires_ms / 1000)
-    print(f"Imported '{name}' [{ext or 'both'}] → {out}")
+    print(f"Imported '{name}' [{ext or 'both'}] ->{out}")
     print(f"  accountId: {account_id}")
     print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
 

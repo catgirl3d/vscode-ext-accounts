@@ -46,14 +46,16 @@ def set_status(msg, ok=True):
 def refresh_accounts():
     tree.delete(*tree.get_children())
 
-    # Read current active accounts from state.vscdb (safe even if VSCode is running)
-    try:
-        current_accounts = db.read_current_accounts()
-    except Exception:
-        current_accounts = {}
+    # Read active accounts from both IDEs independently
+    accounts_per_ide = {}
+    for ide in db.IDE_PATHS:
+        try:
+            accounts_per_ide[ide] = db.read_current_accounts_for_ide(ide)
+        except Exception:
+            accounts_per_ide[ide] = {}
 
-    # Update current-account labels in the top bar
-    _update_current_labels(current_accounts)
+    current_ide = ide_var.get()
+    _update_current_labels(accounts_per_ide.get(current_ide, {}))
 
     d = db._accounts_dir()
     files = sorted(f for f in os.listdir(d) if f.endswith(".json"))
@@ -76,9 +78,21 @@ def refresh_accounts():
                         account_ids.append(v["accountId"][:8] + "…")
             accounts_short = ", ".join(account_ids) if account_ids else "?"
 
-            # Determine which extension slots this saved account is active in
-            active_in = db.match_saved_to_current(data.get("entries", []), current_accounts)
-            active_str = ", ".join(active_in) if active_in else "—"
+            # Check which IDEs / storages have this account active
+            active_tags = []
+            ide_short = {"vscode": "VS", "antigravity": "AG"}
+            for ide, cur_acc in accounts_per_ide.items():
+                hits = db.match_saved_to_current(data.get("entries", []), cur_acc)
+                if hits:
+                    active_tags.append(ide_short.get(ide, ide))
+            # Check kilo-new (auth.json)
+            kn_fp = db.get_kilo_new_fingerprint()
+            if kn_fp:
+                for e in data.get("entries", []):
+                    if db.account_fingerprint(e.get("value", {})) == kn_fp:
+                        active_tags.append("KN")
+                        break
+            active_str = "+".join(active_tags) if active_tags else "—"
 
             tree.insert("", "end", iid=name,
                         values=(name, ext_tag, accounts_short, saved_at, exp_str, active_str))
@@ -86,13 +100,17 @@ def refresh_accounts():
             tree.insert("", "end", iid=name,
                         values=(name, "?", "?", "?", "?", "?"))
 
-    vscode_state = "running ⚠" if db.is_vscode_running() else "closed ✓"
-    vscode_color = "#c0392b" if db.is_vscode_running() else "#2d8a4e"
-    vscode_label.config(text=f"VSCode: {vscode_state}", fg=vscode_color)
+    ide_cfg = db.IDE_PATHS[current_ide]
+    running = db.is_ide_running(current_ide)
+    state_str = "running ⚠" if running else "closed ✓"
+    state_color = "#c0392b" if running else "#2d8a4e"
+    vscode_label.config(text=f"{ide_cfg['label']}: {state_str}", fg=state_color)
 
 
 def _update_current_labels(current_accounts: dict):
     """Update the 'Current: …' labels below the top bar."""
+    ide_label_text = db.IDE_PATHS[ide_var.get()]["label"]
+    current_ide_label.config(text=f"Current in {ide_label_text}:")
     for ext_id, widget in _current_labels.items():
         info = current_accounts.get(ext_id)
         if info:
@@ -141,14 +159,27 @@ def on_use():
     name = selected_name()
     if not name:
         return
-    if db.is_vscode_running():
-        messagebox.showerror("VSCode is running", "Close VSCode before switching accounts.")
+    ext = ext_var.get() if ext_var.get() != "both" else None
+
+    # kilo-new lives inside Antigravity — always check Antigravity process
+    if ext_var.get() == "kilo-new":
+        if db.is_ide_running("antigravity"):
+            messagebox.showerror("Antigravity is running", "Close Antigravity before switching Kilo New account.")
+            return
+        if not messagebox.askyesno("Switch account", f"Switch '{name}' [kilo-new]?\nAntigravity must stay closed until done."):
+            return
+        run_guarded(db.use_account, name, "kilo-new", success_msg=f"Switched '{name}' [kilo-new]. Start Antigravity.")
         return
-    ext = selected_ext()
+
+    current_ide = ide_var.get()
+    ide_label = db.IDE_PATHS[current_ide]["label"]
+    if db.is_ide_running(current_ide):
+        messagebox.showerror(f"{ide_label} is running", f"Close {ide_label} before switching accounts.")
+        return
     label = f"[{ext}]" if ext else "[both]"
-    if not messagebox.askyesno("Switch account", f"Switch to '{name}' {label}?\nVSCode must stay closed until done."):
+    if not messagebox.askyesno("Switch account", f"Switch to '{name}' {label}?\n{ide_label} must stay closed until done."):
         return
-    run_guarded(db.use_account, name, ext, success_msg=f"Switched to '{name}' {label}. Start VSCode.")
+    run_guarded(db.use_account, name, ext, success_msg=f"Switched to '{name}' {label}. Start {ide_label}.")
 
 
 def on_delete():
@@ -220,12 +251,26 @@ style.map("Treeview", background=[("selected", SEL_BG)], foreground=[("selected"
 top = tk.Frame(root, bg=BG, pady=6)
 top.pack(fill="x", padx=10)
 
-vscode_label = tk.Label(top, text="VSCode: ?", bg=BG, fg=FG, font=("Segoe UI", 10, "bold"))
+ide_var = tk.StringVar(value="vscode")
+
+def on_ide_change():
+    db.set_ide(ide_var.get())
+    refresh_accounts()
+
+tk.Label(top, text="IDE:", bg=BG, fg="#6c7086", font=("Segoe UI", 9)).pack(side="left")
+for val, label in [("vscode", "VSCode"), ("antigravity", "Antigravity")]:
+    tk.Radiobutton(top, text=label, variable=ide_var, value=val, command=on_ide_change,
+                   bg=BG, fg=FG, selectcolor=BTN_BG, activebackground=BG,
+                   activeforeground=FG, font=("Segoe UI", 9, "bold")).pack(side="left", padx=4)
+
+tk.Label(top, text="  ", bg=BG).pack(side="left")
+
+vscode_label = tk.Label(top, text="", bg=BG, fg=FG, font=("Segoe UI", 10, "bold"))
 vscode_label.pack(side="left", padx=(0, 20))
 
 tk.Label(top, text="Extension:", bg=BG, fg="#6c7086", font=("Segoe UI", 9)).pack(side="left")
 ext_var = tk.StringVar(value="both")
-for val, label in [("both", "Both"), ("kilocode", "Kilocode"), ("roo-cline", "Roo-Cline")]:
+for val, label in [("both", "Both"), ("kilocode", "Kilocode"), ("roo-cline", "Roo-Cline"), ("kilo-new", "Kilo New")]:
     tk.Radiobutton(top, text=label, variable=ext_var, value=val,
                    bg=BG, fg=FG, selectcolor=BTN_BG, activebackground=BG,
                    activeforeground=FG, font=("Segoe UI", 9)).pack(side="left", padx=4)
@@ -234,8 +279,9 @@ for val, label in [("both", "Both"), ("kilocode", "Kilocode"), ("roo-cline", "Ro
 current_frame = tk.Frame(root, bg=BG)
 current_frame.pack(fill="x", padx=10, pady=(0, 2))
 
-tk.Label(current_frame, text="Current in VSCode:", bg=BG, fg="#6c7086",
-         font=("Segoe UI", 9, "bold")).pack(side="left")
+current_ide_label = tk.Label(current_frame, text="Current in VSCode:", bg=BG, fg="#6c7086",
+         font=("Segoe UI", 9, "bold"))
+current_ide_label.pack(side="left")
 
 _current_labels: dict[str, tk.Label] = {}
 for _ext_id in db.EXTENSIONS.values():
