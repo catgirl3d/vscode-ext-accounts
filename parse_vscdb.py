@@ -10,6 +10,7 @@ import sys
 import base64
 import struct
 import datetime
+from typing import NoReturn
 
 IDE_PATHS = {
     "vscode": {
@@ -45,7 +46,7 @@ def _cli_choice_spec(values) -> str:
     return "|".join(values)
 
 
-def cli_usage_error(message: str):
+def cli_usage_error(message: str) -> NoReturn:
     print(message, file=sys.stderr)
     print(file=sys.stderr)
     print("CLI options:", file=sys.stderr)
@@ -213,10 +214,6 @@ def is_ide_running(ide: str | None = None) -> bool:
         capture_output=True, text=True
     )
     return process in result.stdout
-
-
-def is_vscode_running() -> bool:
-    return is_ide_running()
 
 
 def guard_vscode_closed():
@@ -470,13 +467,16 @@ ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "account
 OAUTH_KEY = "openai-codex-oauth-credentials"
 KILO_AUTH_PATH = os.path.join(os.path.expanduser("~"), ".local", "share", "kilo", "auth.json")
 KILO_NEW_KEY = "kilo-new://openai"
+CODEX_AUTH_PATH = os.path.join(os.path.expanduser("~"), ".codex", "auth.json")
+CODEX_KEY = "codex://openai"
 
-# Known extension slots ("kilo-new" uses file-based auth, not state.vscdb)
+# Known extension slots ("kilo-new" and "codex" use file-based auth, not state.vscdb)
 EXTENSIONS = {
     "both":      None,
     "kilocode":  "kilocode.kilo-code",
     "roo-cline": "rooveterinaryinc.roo-cline",
     "kilo-new":  KILO_NEW_KEY,
+    "codex":     CODEX_KEY,
 }
 
 # Friendly names for display (reverse lookup by extensionId)
@@ -492,14 +492,22 @@ def _is_kilo_new(ext_sub: str | None) -> bool:
     return ext_sub == KILO_NEW_KEY
 
 
+def _is_codex(ext_sub: str | None) -> bool:
+    return ext_sub == CODEX_KEY
+
+
 def _entry_key_for_ext(ext_id: str) -> str:
-    if _is_kilo_new(ext_id):
-        return KILO_NEW_KEY
+    if _is_kilo_new(ext_id) or _is_codex(ext_id):
+        return ext_id
     return f'secret://{{"extensionId":"{ext_id}","key":"{OAUTH_KEY}"}}'
 
 
 def _db_extension_names() -> list[str]:
-    return [name for name, ext_id in EXTENSIONS.items() if ext_id and not _is_kilo_new(ext_id)]
+    return [
+        name
+        for name, ext_id in EXTENSIONS.items()
+        if ext_id and not _is_kilo_new(ext_id) and not _is_codex(ext_id)
+    ]
 
 
 def _normalize_ext_selection(ext: str | list[str] | tuple[str, ...] | None) -> tuple[list[str], str]:
@@ -530,6 +538,89 @@ def _normalize_ext_selection(ext: str | list[str] | tuple[str, ...] | None) -> t
         raise ValueError("Select at least one extension.")
 
     return normalized, "+".join(normalized)
+
+
+def _decode_jwt_exp_ms(token: str | None) -> int:
+    if not token:
+        return 0
+    try:
+        payload_b64 = token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.b64decode(payload_b64).decode("utf-8"))
+        return int(payload.get("exp", 0)) * 1000
+    except Exception:
+        return 0
+
+
+def _read_codex_auth() -> dict:
+    if not os.path.exists(CODEX_AUTH_PATH):
+        return {}
+    with open(CODEX_AUTH_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_codex_auth(data: dict):
+    os.makedirs(os.path.dirname(CODEX_AUTH_PATH), exist_ok=True)
+    with open(CODEX_AUTH_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _to_codex_format(value: dict, existing: dict | None = None) -> dict:
+    existing = existing if isinstance(existing, dict) else {}
+    raw_existing_tokens = existing.get("tokens")
+    existing_tokens: dict[str, object]
+    if isinstance(raw_existing_tokens, dict):
+        existing_tokens = raw_existing_tokens
+    else:
+        existing_tokens = {}
+
+    account_id = value.get("accountId") or value.get("account_id", "")
+    id_token = value.get("id_token")
+    if not id_token and existing_tokens.get("account_id") == account_id:
+        id_token = existing_tokens.get("id_token")
+    if not isinstance(id_token, str) or not id_token:
+        raise ValueError(
+            "Codex auth.json requires id_token. It can only be reused from the same Codex account or imported from an existing Codex auth.json."
+        )
+
+    tokens = {
+        "id_token": id_token,
+        "access_token": value.get("access_token") or value.get("access", ""),
+        "refresh_token": value.get("refresh_token") or value.get("refresh", ""),
+        "account_id": account_id,
+    }
+
+    out = dict(existing)
+    out["auth_mode"] = "chatgpt"
+    out["OPENAI_API_KEY"] = None
+    out["tokens"] = tokens
+    out["last_refresh"] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    return out
+
+
+def _from_codex_format(value: dict) -> dict:
+    raw_tokens = value.get("tokens")
+    tokens: dict[str, object]
+    if isinstance(raw_tokens, dict):
+        tokens = raw_tokens
+    else:
+        tokens = {}
+    access_token = tokens.get("access_token")
+    access_token_str = access_token if isinstance(access_token, str) else ""
+    refresh_token = tokens.get("refresh_token")
+    refresh_token_str = refresh_token if isinstance(refresh_token, str) else ""
+    account_id = tokens.get("account_id")
+    account_id_str = account_id if isinstance(account_id, str) else ""
+    id_token = tokens.get("id_token")
+    id_token_str = id_token if isinstance(id_token, str) else None
+    return {
+        "type": "openai-codex",
+        "access_token": access_token_str,
+        "refresh_token": refresh_token_str,
+        "expires": _decode_jwt_exp_ms(access_token_str),
+        "accountId": account_id_str,
+        "id_token": id_token_str,
+    }
 
 
 # ── Kilo New (auth.json) helpers ──────────────────────────────────────────────
@@ -594,23 +685,47 @@ def read_current_kilo_new_account() -> dict[str, dict]:
     return {KILO_NEW_KEY: info}
 
 
+def read_current_codex_account() -> dict[str, dict]:
+    """Read the currently active Codex account from auth.json."""
+    current = _from_codex_format(_read_codex_auth())
+    fingerprint = account_fingerprint(current)
+    if not fingerprint:
+        return {}
+
+    info = {
+        "accountId": current.get("accountId", "?"),
+        "fingerprint": fingerprint,
+        "expires": current.get("expires"),
+    }
+    return {CODEX_KEY: info}
+
+
 # ── Current account detection ─────────────────────────────────────────────────
 
 def account_fingerprint(value) -> str | None:
     """Compute a stable fingerprint for an OAuth entry.
 
-    Handles both old format (refresh_token) and kilo-new format (refresh).
+    Handles old format (refresh_token), kilo-new format (refresh),
+    and Codex auth.json payloads.
     Falls back to accountId, returns None when neither is present.
     """
     if not isinstance(value, dict):
         return None
     import hashlib
-    rt = value.get("refresh_token") or value.get("refresh")
+    raw_tokens = value.get("tokens")
+    tokens: dict[str, object]
+    if isinstance(raw_tokens, dict):
+        tokens = raw_tokens
+    else:
+        tokens = {}
+    rt = value.get("refresh_token") or value.get("refresh") or tokens.get("refresh_token")
     if rt:
-        return hashlib.sha256(rt.encode("utf-8")).hexdigest()
-    aid = value.get("accountId")
+        rt_str = rt if isinstance(rt, str) else str(rt)
+        return hashlib.sha256(rt_str.encode("utf-8")).hexdigest()
+    aid = value.get("accountId") or value.get("account_id") or tokens.get("account_id")
     if aid:
-        return hashlib.sha256(aid.encode("utf-8")).hexdigest()
+        aid_str = aid if isinstance(aid, str) else str(aid)
+        return hashlib.sha256(aid_str.encode("utf-8")).hexdigest()
     return None
 
 
@@ -721,7 +836,7 @@ def _read_current_entries_for_selection(ext_names: list[str]) -> list[dict]:
     import tempfile
 
     entries = []
-    db_target_ids = [EXTENSIONS[name] for name in ext_names if name != "kilo-new"]
+    db_target_ids = [EXTENSIONS[name] for name in ext_names if name not in ("kilo-new", "codex")]
 
     if db_target_ids:
         aes_key = get_aes_key()
@@ -752,6 +867,11 @@ def _read_current_entries_for_selection(ext_names: list[str]) -> list[dict]:
         if openai_entry:
             entries.append({"key": KILO_NEW_KEY, "value": _from_kilo_new_format(openai_entry)})
 
+    if "codex" in ext_names:
+        codex_value = _from_codex_format(_read_codex_auth())
+        if account_fingerprint(codex_value):
+            entries.append({"key": CODEX_KEY, "value": codex_value})
+
     return entries
 
 
@@ -769,7 +889,7 @@ def _write_account_file(name: str, ext_label: str, entries: list[dict]) -> str:
 
 def save_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
     """Save current openai-codex-oauth-credentials as a named account.
-    ext: 'kilocode', 'roo-cline', 'kilo-new', or None (both).
+    ext: 'kilocode', 'roo-cline', 'kilo-new', 'codex', or None (both).
     """
     ext_names, ext_label = _normalize_ext_selection(ext)
     entries = _read_current_entries_for_selection(ext_names)
@@ -813,8 +933,11 @@ def use_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None)
         print(f"No entries in account '{name}'.")
         sys.exit(1)
 
-    db_target_ids = [EXTENSIONS[name] for name in ext_names if name != "kilo-new"]
-    source_db = next((e for e in entries if e.get("key") != KILO_NEW_KEY), source)
+    db_target_ids = [EXTENSIONS[name] for name in ext_names if name not in ("kilo-new", "codex")]
+    source_db = next((e for e in entries if e.get("key") not in (KILO_NEW_KEY, CODEX_KEY)), None)
+    source_kilo_new = next((e for e in entries if e.get("key") == KILO_NEW_KEY), None)
+    source_codex = next((e for e in entries if e.get("key") == CODEX_KEY), None)
+    generic_source = source_db or source_codex or source_kilo_new or source
 
     if db_target_ids:
         remapped_entries = []
@@ -825,12 +948,12 @@ def use_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None)
                 remapped_entries.append(existing)
                 continue
 
-            if not source_db:
+            if not generic_source:
                 print(f"No source entry available for '{eid}'.")
                 sys.exit(1)
 
-            print(f"[cross-ext] No '{eid}' key — remapping from: {source_db['key']}")
-            remapped_entries.append({"key": entry_key, "value": source_db["value"]})
+            print(f"[cross-ext] No '{eid}' key — remapping from: {generic_source['key']}")
+            remapped_entries.append({"key": entry_key, "value": generic_source["value"]})
 
         import tempfile
         remapped = {**account_data, "entries": remapped_entries}
@@ -843,6 +966,21 @@ def use_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None)
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+    if "codex" in ext_names:
+        source_entry = source_codex or generic_source
+        if not source_entry:
+            print("No source entry available for 'codex'.")
+            sys.exit(1)
+
+        try:
+            codex_auth = _to_codex_format(source_entry["value"], _read_codex_auth())
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)
+        _write_codex_auth(codex_auth)
+        print(f"[codex] Written to {CODEX_AUTH_PATH}")
+        print(f"  accountId: {codex_auth.get('tokens', {}).get('account_id', '?')}")
+
     if "kilo-new" not in ext_names:
         return
 
@@ -851,7 +989,7 @@ def use_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None)
         print("ERROR: Antigravity is running. Close it before switching accounts.")
         sys.exit(1)
 
-    source_entry = next((e for e in entries if e.get("key") == KILO_NEW_KEY), None) or source_db
+    source_entry = source_kilo_new or generic_source
     if not source_entry:
         print("No source entry available for 'kilo-new'.")
         sys.exit(1)
@@ -901,34 +1039,24 @@ def import_codex_auth(auth_path: str, name: str, ext: str | list[str] | tuple[st
     with open(auth_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    tokens = data.get("tokens") or {}
-    access_token = tokens.get("access_token")
-    refresh_token = tokens.get("refresh_token")
-    account_id = tokens.get("account_id")
+    value = _from_codex_format(data)
+    access_token = value.get("access_token")
+    refresh_token = value.get("refresh_token")
+    account_id = value.get("accountId")
+    expires_ms = value.get("expires", 0)
 
     if not access_token or not refresh_token:
         print("ERROR: access_token or refresh_token missing in auth.json")
         sys.exit(1)
 
-    # Decode exp from JWT payload (no deps needed)
-    try:
-        payload_b64 = access_token.split(".")[1]
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        payload = json.loads(base64.b64decode(payload_b64).decode("utf-8"))
-        expires_ms = payload["exp"] * 1000
-    except Exception as e:
-        print(f"ERROR: could not decode JWT: {e}")
+    if not expires_ms:
+        print("ERROR: could not decode access token expiry from auth.json")
         sys.exit(1)
 
-    value = {
-        "type": "openai-codex",
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "expires": expires_ms,
-        "accountId": account_id,
-    }
-
     ext_names, ext_label = _normalize_ext_selection(ext)
+    if "codex" in ext_names and not value.get("id_token"):
+        print("ERROR: Codex import requires id_token in auth.json.")
+        sys.exit(1)
     ext_slots = [EXTENSIONS[name] for name in ext_names]
 
     entries = [
@@ -948,7 +1076,9 @@ def import_codex_auth(auth_path: str, name: str, ext: str | list[str] | tuple[st
 
 
 if __name__ == "__main__":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="replace")
     args = sys.argv[1:]
 
     def arg_val(flag, require_value=False):
@@ -981,16 +1111,19 @@ if __name__ == "__main__":
         name = arg_val("--name", require_value=True)
         if not path or not name:
             cli_usage_error(f"Usage: parse_vscdb.py --import-codex <auth.json> --name <account_name> [--ext <{ext_spec}>]")
+        assert path is not None and name is not None
         import_codex_auth(path, name, cli_ext)
     elif "--save-account" in args:
         name = arg_val("--save-account", require_value=True)
         if not name:
             cli_usage_error(f"Usage: parse_vscdb.py --save-account <name> [--ide <{ide_spec}>] [--ext <{ext_spec}>]")
+        assert name is not None
         save_account(name, cli_ext)
     elif "--use-account" in args:
         name = arg_val("--use-account", require_value=True)
         if not name:
             cli_usage_error(f"Usage: parse_vscdb.py --use-account <name> [--ide <{ide_spec}>] [--ext <{ext_spec}>]")
+        assert name is not None
         use_account(name, cli_ext)
     elif "--list-accounts" in args:
         list_accounts()
@@ -1000,11 +1133,13 @@ if __name__ == "__main__":
         pattern = arg_val("--get", require_value=True)
         if not pattern:
             cli_usage_error(f"Usage: parse_vscdb.py --get <pattern> [--out file.json] [--ide <{ide_spec}>]")
+        assert pattern is not None
         get_key(pattern, arg_val("--out"))
     elif "--restore" in args:
         path = arg_val("--restore", require_value=True)
         if not path:
             cli_usage_error(f"Usage: parse_vscdb.py --restore <backup.json> [--key <pattern>] [--ide <{ide_spec}>]")
+        assert path is not None
         restore(path, arg_val("--key"))
     else:
         main()

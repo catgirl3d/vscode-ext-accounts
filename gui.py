@@ -56,6 +56,14 @@ def refresh_accounts():
 
     current_ide = ide_var.get()
     _update_current_labels(accounts_per_ide.get(current_ide, {}))
+    try:
+        kilo_new_fp = db.get_kilo_new_fingerprint()
+    except Exception:
+        kilo_new_fp = None
+    try:
+        codex_current = db.read_current_codex_account().get(db.CODEX_KEY, {})
+    except Exception:
+        codex_current = {}
 
     d = db._accounts_dir()
     files = sorted(f for f in os.listdir(d) if f.endswith(".json"))
@@ -86,12 +94,16 @@ def refresh_accounts():
                 hits = db.match_saved_to_current(data.get("entries", []), ide_accounts)
                 if hits:
                     active_tags.append(ide_short.get(ide, ide))
-            # Check kilo-new (auth.json)
-            kn_fp = db.get_kilo_new_fingerprint()
-            if kn_fp:
+            file_targets = [
+                ("KN", kilo_new_fp),
+                ("CX", codex_current.get("fingerprint")),
+            ]
+            for tag, current_fp in file_targets:
+                if not current_fp:
+                    continue
                 for e in data.get("entries", []):
-                    if db.account_fingerprint(e.get("value", {})) == kn_fp:
-                        active_tags.append("KN")
+                    if db.account_fingerprint(e.get("value", {})) == current_fp:
+                        active_tags.append(tag)
                         break
             active_str = "+".join(active_tags) if active_tags else "—"
 
@@ -135,7 +147,7 @@ def selected_name():
 
 # ── Actions ───────────────────────────────────────────────────────────────────
 
-EXTENSION_ORDER = ("kilocode", "roo-cline", "kilo-new")
+EXTENSION_ORDER = ("kilocode", "roo-cline", "kilo-new", "codex")
 
 
 def selected_exts(show_warning=True):
@@ -151,7 +163,7 @@ def format_ext_selection(exts):
 
 def target_ides_for_exts(exts):
     targets = []
-    if any(ext != "kilo-new" for ext in exts):
+    if any(ext in ("kilocode", "roo-cline") for ext in exts):
         targets.append(ide_var.get())
     if "kilo-new" in exts and "antigravity" not in targets:
         targets.append("antigravity")
@@ -198,7 +210,10 @@ def on_use():
 
     label = format_ext_selection(exts)
     hold_labels = format_ide_labels(target_ides)
-    if not messagebox.askyesno("Switch account", f"Switch '{name}' [{label}]?\n{hold_labels} must stay closed until done."):
+    prompt = f"Switch '{name}' [{label}]?"
+    if hold_labels:
+        prompt += f"\n{hold_labels} must stay closed until done."
+    if not messagebox.askyesno("Switch account", prompt):
         return
     run_guarded(db.use_account, name, exts, success_msg=f"Switched '{name}' [{label}]")
 
@@ -253,7 +268,7 @@ root = tk.Tk()
 root.title("VSCode Account Manager")
 root.resizable(False, False)
 
-WINDOW_WIDTH = 820
+WINDOW_WIDTH = 900
 IDE_STATE_LABEL_WIDTH = 24
 CURRENT_IDE_LABEL_WIDTH = 24
 
@@ -304,8 +319,9 @@ ext_vars = {
     "kilocode": tk.BooleanVar(value=False),
     "roo-cline": tk.BooleanVar(value=False),
     "kilo-new": tk.BooleanVar(value=False),
+    "codex": tk.BooleanVar(value=False),
 }
-for val, label in [("kilocode", "Kilocode"), ("roo-cline", "Roo-Cline"), ("kilo-new", "Kilo New")]:
+for val, label in [("kilocode", "Kilocode"), ("roo-cline", "Roo-Cline"), ("kilo-new", "Kilo New"), ("codex", "Codex")]:
     tk.Checkbutton(ext_frame, text=label, variable=ext_vars[val],
                    bg=BG, fg=FG, selectcolor=BTN_BG, activebackground=BG,
                    activeforeground=FG, font=("Segoe UI", 9)).pack(side="left", padx=4)
@@ -319,9 +335,8 @@ current_ide_label = tk.Label(current_frame, text="Current in VSCode:", width=CUR
 current_ide_label.pack(side="left")
 
 _current_labels: dict[str, tk.Label] = {}
-for _ext_id in db.EXTENSIONS.values():
-    if _ext_id is None:
-        continue
+for _ext_name in ("kilocode", "roo-cline", "kilo-new"):
+    _ext_id = db.EXTENSIONS[_ext_name]
     lbl = tk.Label(current_frame, text="", bg=BG, fg="#6c7086",
                    font=("Segoe UI", 9))
     lbl.pack(side="left", padx=(8, 0))
@@ -337,7 +352,7 @@ tree.heading("saved",      text="Saved")
 tree.heading("expires",    text="Expires")
 tree.heading("active",     text="Active")
 tree.column("name",       width=110, anchor="w")
-tree.column("ext",        width=180, anchor="w")
+tree.column("ext",        width=240, anchor="w")
 tree.column("accountIds", width=140, anchor="w")
 tree.column("saved",      width=110, anchor="center")
 tree.column("expires",    width=80,  anchor="center")
