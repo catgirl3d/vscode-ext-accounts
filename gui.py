@@ -82,7 +82,8 @@ def refresh_accounts():
             active_tags = []
             ide_short = {"vscode": "VS", "antigravity": "AG"}
             for ide, cur_acc in accounts_per_ide.items():
-                hits = db.match_saved_to_current(data.get("entries", []), cur_acc)
+                ide_accounts = {ext_id: info for ext_id, info in cur_acc.items() if ext_id != db.KILO_NEW_KEY}
+                hits = db.match_saved_to_current(data.get("entries", []), ide_accounts)
                 if hits:
                     active_tags.append(ide_short.get(ide, ide))
             # Check kilo-new (auth.json)
@@ -117,16 +118,8 @@ def _update_current_labels(current_accounts: dict):
             aid = info.get("accountId", "?")
             if isinstance(aid, str) and len(aid) > 12:
                 aid = aid[:12] + "…"
-            exp = info.get("expires")
-            exp_str = ""
-            if exp:
-                try:
-                    exp_dt = datetime.datetime.fromtimestamp(exp / 1000)
-                    exp_str = f"  exp {exp_dt.strftime('%Y-%m-%d')}"
-                except Exception:
-                    pass
             short = db._EXT_DISPLAY.get(ext_id, ext_id)
-            widget.config(text=f"  {short}: {aid}{exp_str}", fg="#a6e3a1")
+            widget.config(text=f"  {short}: {aid}", fg="#a6e3a1")
         else:
             short = db._EXT_DISPLAY.get(ext_id, ext_id)
             widget.config(text=f"  {short}: —", fg="#6c7086")
@@ -142,8 +135,36 @@ def selected_name():
 
 # ── Actions ───────────────────────────────────────────────────────────────────
 
-def selected_ext():
-    return ext_var.get() if ext_var.get() != "both" else None
+EXTENSION_ORDER = ("kilocode", "roo-cline", "kilo-new")
+
+
+def selected_exts(show_warning=True):
+    exts = [name for name in EXTENSION_ORDER if ext_vars[name].get()]
+    if not exts and show_warning:
+        messagebox.showwarning("No extension", "Select at least one extension.")
+    return exts
+
+
+def format_ext_selection(exts):
+    return "+".join(exts)
+
+
+def target_ides_for_exts(exts):
+    targets = []
+    if any(ext != "kilo-new" for ext in exts):
+        targets.append(ide_var.get())
+    if "kilo-new" in exts and "antigravity" not in targets:
+        targets.append("antigravity")
+    return targets
+
+
+def format_ide_labels(ides):
+    labels = [db.IDE_PATHS[ide]["label"] for ide in ides]
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    return " and ".join(labels)
 
 
 def on_save():
@@ -151,35 +172,35 @@ def on_save():
     if not name:
         return
     name = name.strip().replace(" ", "_")
-    ext = selected_ext()
-    run_guarded(db.save_account, name, ext, success_msg=f"Saved '{name}' [{ext or 'both'}]")
+    exts = selected_exts()
+    if not exts:
+        return
+    label = format_ext_selection(exts)
+    run_guarded(db.save_account, name, exts, success_msg=f"Saved '{name}' [{label}]")
 
 
 def on_use():
     name = selected_name()
     if not name:
         return
-    ext = ext_var.get() if ext_var.get() != "both" else None
-
-    # kilo-new lives inside Antigravity — always check Antigravity process
-    if ext_var.get() == "kilo-new":
-        if db.is_ide_running("antigravity"):
-            messagebox.showerror("Antigravity is running", "Close Antigravity before switching Kilo New account.")
-            return
-        if not messagebox.askyesno("Switch account", f"Switch '{name}' [kilo-new]?\nAntigravity must stay closed until done."):
-            return
-        run_guarded(db.use_account, name, "kilo-new", success_msg=f"Switched '{name}' [kilo-new]. Start Antigravity.")
+    exts = selected_exts()
+    if not exts:
         return
 
-    current_ide = ide_var.get()
-    ide_label = db.IDE_PATHS[current_ide]["label"]
-    if db.is_ide_running(current_ide):
-        messagebox.showerror(f"{ide_label} is running", f"Close {ide_label} before switching accounts.")
+    target_ides = target_ides_for_exts(exts)
+    running_ides = [ide for ide in target_ides if db.is_ide_running(ide)]
+    if running_ides:
+        running_labels = format_ide_labels(running_ides)
+        title = f"{running_labels} running"
+        message = f"Close {running_labels} before switching accounts."
+        messagebox.showerror(title, message)
         return
-    label = f"[{ext}]" if ext else "[both]"
-    if not messagebox.askyesno("Switch account", f"Switch to '{name}' {label}?\n{ide_label} must stay closed until done."):
+
+    label = format_ext_selection(exts)
+    hold_labels = format_ide_labels(target_ides)
+    if not messagebox.askyesno("Switch account", f"Switch '{name}' [{label}]?\n{hold_labels} must stay closed until done."):
         return
-    run_guarded(db.use_account, name, ext, success_msg=f"Switched to '{name}' {label}. Start {ide_label}.")
+    run_guarded(db.use_account, name, exts, success_msg=f"Switched '{name}' [{label}]")
 
 
 def on_delete():
@@ -209,9 +230,12 @@ def on_import_codex():
     if not name:
         return
     name = name.strip().replace(" ", "_")
-    ext = selected_ext()
-    run_guarded(db.import_codex_auth, path, name, ext,
-                success_msg=f"Imported '{name}' [{ext or 'both'}]")
+    exts = selected_exts()
+    if not exts:
+        return
+    label = format_ext_selection(exts)
+    run_guarded(db.import_codex_auth, path, name, exts,
+                success_msg=f"Imported '{name}' [{label}]")
 
 
 def on_backup():
@@ -228,6 +252,10 @@ def on_refresh():
 root = tk.Tk()
 root.title("VSCode Account Manager")
 root.resizable(False, False)
+
+WINDOW_WIDTH = 820
+IDE_STATE_LABEL_WIDTH = 24
+CURRENT_IDE_LABEL_WIDTH = 24
 
 BG = "#1e1e2e"
 FG = "#cdd6f4"
@@ -265,13 +293,20 @@ for val, label in [("vscode", "VSCode"), ("antigravity", "Antigravity")]:
 
 tk.Label(top, text="  ", bg=BG).pack(side="left")
 
-vscode_label = tk.Label(top, text="", bg=BG, fg=FG, font=("Segoe UI", 10, "bold"))
+vscode_label = tk.Label(top, text="", width=IDE_STATE_LABEL_WIDTH, anchor="w",
+                        bg=BG, fg=FG, font=("Segoe UI", 10, "bold"))
 vscode_label.pack(side="left", padx=(0, 20))
 
 tk.Label(top, text="Extension:", bg=BG, fg="#6c7086", font=("Segoe UI", 9)).pack(side="left")
-ext_var = tk.StringVar(value="both")
-for val, label in [("both", "Both"), ("kilocode", "Kilocode"), ("roo-cline", "Roo-Cline"), ("kilo-new", "Kilo New")]:
-    tk.Radiobutton(top, text=label, variable=ext_var, value=val,
+ext_frame = tk.Frame(top, bg=BG)
+ext_frame.pack(side="left")
+ext_vars = {
+    "kilocode": tk.BooleanVar(value=False),
+    "roo-cline": tk.BooleanVar(value=False),
+    "kilo-new": tk.BooleanVar(value=False),
+}
+for val, label in [("kilocode", "Kilocode"), ("roo-cline", "Roo-Cline"), ("kilo-new", "Kilo New")]:
+    tk.Checkbutton(ext_frame, text=label, variable=ext_vars[val],
                    bg=BG, fg=FG, selectcolor=BTN_BG, activebackground=BG,
                    activeforeground=FG, font=("Segoe UI", 9)).pack(side="left", padx=4)
 
@@ -279,8 +314,8 @@ for val, label in [("both", "Both"), ("kilocode", "Kilocode"), ("roo-cline", "Ro
 current_frame = tk.Frame(root, bg=BG)
 current_frame.pack(fill="x", padx=10, pady=(0, 2))
 
-current_ide_label = tk.Label(current_frame, text="Current in VSCode:", bg=BG, fg="#6c7086",
-         font=("Segoe UI", 9, "bold"))
+current_ide_label = tk.Label(current_frame, text="Current in VSCode:", width=CURRENT_IDE_LABEL_WIDTH,
+         anchor="w", bg=BG, fg="#6c7086", font=("Segoe UI", 9, "bold"))
 current_ide_label.pack(side="left")
 
 _current_labels: dict[str, tk.Label] = {}
@@ -302,7 +337,7 @@ tree.heading("saved",      text="Saved")
 tree.heading("expires",    text="Expires")
 tree.heading("active",     text="Active")
 tree.column("name",       width=110, anchor="w")
-tree.column("ext",        width=70,  anchor="center")
+tree.column("ext",        width=180, anchor="w")
 tree.column("accountIds", width=140, anchor="w")
 tree.column("saved",      width=110, anchor="center")
 tree.column("expires",    width=80,  anchor="center")
@@ -336,4 +371,6 @@ status_label = tk.Label(root, textvariable=status_var, bg=BG, fg="#2d8a4e",
 status_label.pack(fill="x", padx=10, pady=(0, 8))
 
 refresh_accounts()
+root.update_idletasks()
+root.geometry(f"{max(root.winfo_reqwidth(), WINDOW_WIDTH)}x{root.winfo_reqheight()}")
 root.mainloop()

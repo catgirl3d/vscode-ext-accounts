@@ -32,10 +32,26 @@ LOCAL_STATE_PATH = IDE_PATHS["vscode"]["local_state"]
 
 def set_ide(name: str):
     global DB_PATH, LOCAL_STATE_PATH, CURRENT_IDE
+    if name not in IDE_PATHS:
+        valid = ", ".join(IDE_PATHS)
+        raise ValueError(f"Unknown IDE '{name}'. Expected one of: {valid}")
     cfg = IDE_PATHS[name]
     DB_PATH = cfg["db"]
     LOCAL_STATE_PATH = cfg["local_state"]
     CURRENT_IDE = name
+
+
+def _cli_choice_spec(values) -> str:
+    return "|".join(values)
+
+
+def cli_usage_error(message: str):
+    print(message, file=sys.stderr)
+    print(file=sys.stderr)
+    print("CLI options:", file=sys.stderr)
+    print(f"  --ide <{_cli_choice_spec(IDE_PATHS)}>   Select which state.vscdb / Local State to use", file=sys.stderr)
+    print(f"  --ext <{_cli_choice_spec(EXTENSIONS)}>   Select account target slot", file=sys.stderr)
+    sys.exit(1)
 
 SEARCH_KEYS = [
     "kilocode", "kilo-code", "kilo_code",
@@ -288,7 +304,7 @@ def get_key(pattern: str, out_path: str | None = None):
 
 def restore(backup_path: str, key_filter: str | None = None):
     """Restore secrets from a backup JSON into state.vscdb.
-    VSCode must be closed before running this.
+    The currently selected IDE must be closed before running this.
     """
     if not os.path.exists(backup_path):
         print(f"Backup file not found: {backup_path}")
@@ -383,7 +399,7 @@ def restore(backup_path: str, key_filter: str | None = None):
 
     print()
     print(f"Restored: {restored}  Skipped: {skipped}")
-    print("Done. Start VSCode now.")
+    print(f"Done. Start {IDE_PATHS[CURRENT_IDE]['label']} now.")
 
 
 def backup(out_path: str | None = None):
@@ -472,15 +488,48 @@ def _accounts_dir() -> str:
     return ACCOUNTS_DIR
 
 
-def _ext_filter(ext: str | None) -> str | None:
-    """Resolve extension shortname to DB key substring."""
-    if ext is None or ext == "both":
-        return None
-    return EXTENSIONS.get(ext, ext)
-
-
 def _is_kilo_new(ext_sub: str | None) -> bool:
     return ext_sub == KILO_NEW_KEY
+
+
+def _entry_key_for_ext(ext_id: str) -> str:
+    if _is_kilo_new(ext_id):
+        return KILO_NEW_KEY
+    return f'secret://{{"extensionId":"{ext_id}","key":"{OAUTH_KEY}"}}'
+
+
+def _db_extension_names() -> list[str]:
+    return [name for name, ext_id in EXTENSIONS.items() if ext_id and not _is_kilo_new(ext_id)]
+
+
+def _normalize_ext_selection(ext: str | list[str] | tuple[str, ...] | None) -> tuple[list[str], str]:
+    if ext is None or ext == "both":
+        names = _db_extension_names()
+        return names, "both"
+
+    if isinstance(ext, str):
+        items = [ext]
+    else:
+        items = list(ext)
+
+    normalized: list[str] = []
+    valid = {name for name in EXTENSIONS if name != "both"}
+    for name in items:
+        if name == "both":
+            for db_name in _db_extension_names():
+                if db_name not in normalized:
+                    normalized.append(db_name)
+            continue
+        if name not in valid:
+            valid_str = ", ".join(sorted(valid))
+            raise ValueError(f"Unknown extension '{name}'. Expected one of: {valid_str}")
+        if name not in normalized:
+            normalized.append(name)
+
+    if not normalized:
+        raise ValueError("Select at least one extension.")
+
+    return normalized, "+".join(normalized)
 
 
 # ── Kilo New (auth.json) helpers ──────────────────────────────────────────────
@@ -528,6 +577,21 @@ def get_kilo_new_fingerprint() -> str | None:
     if not refresh:
         return None
     return hashlib.sha256(refresh.encode()).hexdigest()
+
+
+def read_current_kilo_new_account() -> dict[str, dict]:
+    """Read the currently active Kilo New account from auth.json."""
+    auth = _read_kilo_auth()
+    openai_entry = auth.get("openai")
+    if not isinstance(openai_entry, dict):
+        return {}
+
+    info = {
+        "accountId": openai_entry.get("accountId", "?"),
+        "fingerprint": account_fingerprint(openai_entry),
+        "expires": openai_entry.get("expires"),
+    }
+    return {KILO_NEW_KEY: info}
 
 
 # ── Current account detection ─────────────────────────────────────────────────
@@ -641,64 +705,81 @@ def match_saved_to_current(
 
 
 def read_current_accounts_for_ide(ide: str) -> dict[str, dict]:
-    """Read active OAuth accounts from a specific IDE's state.vscdb."""
-    cfg = IDE_PATHS[ide]
-    return read_current_accounts(cfg["db"], cfg["local_state"])
+    """Read active OAuth accounts for a specific IDE.
 
-
-def save_account(name: str, ext: str | None = None):
-    """Save current openai-codex-oauth-credentials as a named account.
-    ext: 'kilocode', 'roo-cline', 'kilo-new', or None (both).
+    Antigravity also includes the file-based Kilo New auth state.
     """
-    import shutil, tempfile
-    ext_sub = _ext_filter(ext)
-    entries = []
+    cfg = IDE_PATHS[ide]
+    accounts = read_current_accounts(cfg["db"], cfg["local_state"])
+    if ide == "antigravity":
+        accounts.update(read_current_kilo_new_account())
+    return accounts
 
-    # kilo-new: read from auth.json
-    if _is_kilo_new(ext_sub):
-        kilo_auth = _read_kilo_auth()
-        openai_entry = kilo_auth.get("openai")
-        if not openai_entry:
-            print("No 'openai' entry found in kilo auth.json.")
-            sys.exit(1)
-        entries.append({"key": KILO_NEW_KEY, "value": _from_kilo_new_format(openai_entry)})
-    else:
-        # state.vscdb based extensions
+
+def _read_current_entries_for_selection(ext_names: list[str]) -> list[dict]:
+    import shutil
+    import tempfile
+
+    entries = []
+    db_target_ids = [EXTENSIONS[name] for name in ext_names if name != "kilo-new"]
+
+    if db_target_ids:
         aes_key = get_aes_key()
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
         shutil.copy2(DB_PATH, tmp.name)
         con = sqlite3.connect(tmp.name)
 
-        for key, value in con.execute("SELECT key, value FROM ItemTable ORDER BY key"):
-            if OAUTH_KEY not in key:
-                continue
-            if ext_sub and ext_sub not in key:
-                continue
-            decoded = _decode_entry(value, aes_key)
-            try:
-                decoded_parsed = json.loads(decoded)
-            except Exception:
-                decoded_parsed = decoded
-            entries.append({"key": key, "value": decoded_parsed})
+        try:
+            for key, value in con.execute("SELECT key, value FROM ItemTable ORDER BY key"):
+                if OAUTH_KEY not in key:
+                    continue
+                if not any(ext_id in key for ext_id in db_target_ids):
+                    continue
+                decoded = _decode_entry(value, aes_key)
+                try:
+                    decoded_parsed = json.loads(decoded)
+                except Exception:
+                    decoded_parsed = decoded
+                entries.append({"key": key, "value": decoded_parsed})
+        finally:
+            con.close()
+            os.unlink(tmp.name)
 
-        con.close()
-        os.unlink(tmp.name)
+    if "kilo-new" in ext_names:
+        kilo_auth = _read_kilo_auth()
+        openai_entry = kilo_auth.get("openai")
+        if openai_entry:
+            entries.append({"key": KILO_NEW_KEY, "value": _from_kilo_new_format(openai_entry)})
 
-        if not entries:
-            print(f"No {OAUTH_KEY} entries found{' for ' + ext if ext else ''}.")
-            sys.exit(1)
+    return entries
 
+
+def _write_account_file(name: str, ext_label: str, entries: list[dict]) -> str:
     out = os.path.join(_accounts_dir(), f"{name}.json")
     with open(out, "w", encoding="utf-8") as f:
         json.dump({
             "name": name,
-            "ext": ext or "both",
+            "ext": ext_label,
             "saved_at": datetime.datetime.now().isoformat(),
             "entries": entries,
         }, f, indent=2, ensure_ascii=False)
+    return out
 
-    print(f"Account '{name}' saved [{ext or 'both'}] ->{out}")
+
+def save_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
+    """Save current openai-codex-oauth-credentials as a named account.
+    ext: 'kilocode', 'roo-cline', 'kilo-new', or None (both).
+    """
+    ext_names, ext_label = _normalize_ext_selection(ext)
+    entries = _read_current_entries_for_selection(ext_names)
+    if not entries:
+        print(f"No matching account entries found for {ext_label}.")
+        sys.exit(1)
+
+    out = _write_account_file(name, ext_label, entries)
+
+    print(f"Account '{name}' saved [{ext_label}] ->{out}")
     for e in entries:
         v = e["value"]
         if isinstance(v, dict):
@@ -709,8 +790,10 @@ def save_account(name: str, ext: str | None = None):
                 print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
 
 
-def use_account(name: str, ext: str | None = None):
-    """Switch to a saved named account (VSCode must be closed).
+def use_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
+    """Switch to a saved named account.
+
+    The target IDE must be closed before applying changes.
     ext: override which extension slot to write to.
     """
     path = os.path.join(_accounts_dir(), f"{name}.json")
@@ -719,7 +802,7 @@ def use_account(name: str, ext: str | None = None):
         list_accounts()
         sys.exit(1)
 
-    ext_sub = _ext_filter(ext)
+    ext_names, _ = _normalize_ext_selection(ext)
 
     with open(path, "r", encoding="utf-8") as f:
         account_data = json.load(f)
@@ -730,49 +813,56 @@ def use_account(name: str, ext: str | None = None):
         print(f"No entries in account '{name}'.")
         sys.exit(1)
 
-    # ── kilo-new: write to auth.json, check Antigravity is closed ────────────
-    if _is_kilo_new(ext_sub):
-        if is_ide_running("antigravity"):
-            print("ERROR: Antigravity is running. Close it before switching accounts.")
-            sys.exit(1)
-        value = source["value"]
-        new_entry = _to_kilo_new_format(value)
-        kilo_auth = _read_kilo_auth()
-        kilo_auth["openai"] = new_entry
-        _write_kilo_auth(kilo_auth)
-        print(f"[kilo-new] Written to {KILO_AUTH_PATH}")
-        print(f"  accountId: {new_entry.get('accountId', '?')}")
+    db_target_ids = [EXTENSIONS[name] for name in ext_names if name != "kilo-new"]
+    source_db = next((e for e in entries if e.get("key") != KILO_NEW_KEY), source)
+
+    if db_target_ids:
+        remapped_entries = []
+        for eid in db_target_ids:
+            entry_key = _entry_key_for_ext(eid)
+            existing = next((e for e in entries if e.get("key") == entry_key), None)
+            if existing:
+                remapped_entries.append(existing)
+                continue
+
+            if not source_db:
+                print(f"No source entry available for '{eid}'.")
+                sys.exit(1)
+
+            print(f"[cross-ext] No '{eid}' key — remapping from: {source_db['key']}")
+            remapped_entries.append({"key": entry_key, "value": source_db["value"]})
+
+        import tempfile
+        remapped = {**account_data, "entries": remapped_entries}
+        tmp_path = tempfile.mktemp(suffix=".json")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(remapped, f)
+            restore(tmp_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    if "kilo-new" not in ext_names:
         return
 
-    # ── DB-based extensions (kilocode / roo-cline / both) ────────────────────
-    # Build full set of target extension IDs (skip kilo-new)
-    db_ext_ids = [eid for eid in EXTENSIONS.values() if eid and not _is_kilo_new(eid)]
-    if ext_sub is None:
-        target_ids = db_ext_ids
-    else:
-        target_ids = [ext_sub]
+    # ── kilo-new: write to auth.json, check Antigravity is closed ────────────
+    if is_ide_running("antigravity"):
+        print("ERROR: Antigravity is running. Close it before switching accounts.")
+        sys.exit(1)
 
-    # For each target, use existing entry if present, otherwise remap from source
-    remapped_entries = []
-    for eid in target_ids:
-        existing = next((e for e in entries if eid in e["key"]), None)
-        if existing:
-            remapped_entries.append(existing)
-        else:
-            print(f"[cross-ext] No '{eid}' key — remapping from: {source['key']}")
-            new_key = f'secret://{{"extensionId":"{eid}","key":"{OAUTH_KEY}"}}'
-            remapped_entries.append({"key": new_key, "value": source["value"]})
+    source_entry = next((e for e in entries if e.get("key") == KILO_NEW_KEY), None) or source_db
+    if not source_entry:
+        print("No source entry available for 'kilo-new'.")
+        sys.exit(1)
 
-    import tempfile
-    remapped = {**account_data, "entries": remapped_entries}
-    tmp_path = tempfile.mktemp(suffix=".json")
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(remapped, f)
-        restore(tmp_path, key_filter=ext_sub)
-    finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    value = source_entry["value"]
+    new_entry = _to_kilo_new_format(value)
+    kilo_auth = _read_kilo_auth()
+    kilo_auth["openai"] = new_entry
+    _write_kilo_auth(kilo_auth)
+    print(f"[kilo-new] Written to {KILO_AUTH_PATH}")
+    print(f"  accountId: {new_entry.get('accountId', '?')}")
 
 
 def list_accounts():
@@ -802,7 +892,7 @@ def list_accounts():
             print(f"  {name}  (unreadable)")
 
 
-def import_codex_auth(auth_path: str, name: str, ext: str | None = None):
+def import_codex_auth(auth_path: str, name: str, ext: str | list[str] | tuple[str, ...] | None = None):
     """Import tokens from ~/.codex/auth.json and save as a named account."""
     if not os.path.exists(auth_path):
         print(f"File not found: {auth_path}")
@@ -838,34 +928,21 @@ def import_codex_auth(auth_path: str, name: str, ext: str | None = None):
         "accountId": account_id,
     }
 
-    # Build entries for requested extensions
-    ext_sub = _ext_filter(ext)
-    ext_slots = []
-    for ext_name, ext_id in EXTENSIONS.items():
-        if ext_name == "both":
-            continue
-        if ext_sub is None or ext_sub == ext_id:
-            ext_slots.append(ext_id)
+    ext_names, ext_label = _normalize_ext_selection(ext)
+    ext_slots = [EXTENSIONS[name] for name in ext_names]
 
     entries = [
         {
-            "key": f'secret://{{"extensionId":"{ext_id}","key":"{OAUTH_KEY}"}}',
+            "key": _entry_key_for_ext(ext_id),
             "value": value,
         }
         for ext_id in ext_slots
     ]
 
-    out = os.path.join(_accounts_dir(), f"{name}.json")
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump({
-            "name": name,
-            "ext": ext or "both",
-            "saved_at": datetime.datetime.now().isoformat(),
-            "entries": entries,
-        }, f, indent=2, ensure_ascii=False)
+    out = _write_account_file(name, ext_label, entries)
 
     exp_dt = datetime.datetime.fromtimestamp(expires_ms / 1000)
-    print(f"Imported '{name}' [{ext or 'both'}] ->{out}")
+    print(f"Imported '{name}' [{ext_label}] ->{out}")
     print(f"  accountId: {account_id}")
     print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
 
@@ -874,47 +951,60 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = sys.argv[1:]
 
-    def arg_val(flag):
+    def arg_val(flag, require_value=False):
         """Return value after flag, or None."""
         if flag in args:
             idx = args.index(flag)
-            return args[idx + 1] if idx + 1 < len(args) else None
+            has_value = idx + 1 < len(args) and not args[idx + 1].startswith("--")
+            if require_value and not has_value:
+                cli_usage_error(f"Missing value for {flag}.")
+            return args[idx + 1] if has_value else None
         return None
 
+    ide_spec = _cli_choice_spec(IDE_PATHS)
+    ext_spec = _cli_choice_spec(EXTENSIONS)
+
+    cli_ide = arg_val("--ide", require_value="--ide" in args)
+    if cli_ide:
+        try:
+            set_ide(cli_ide)
+        except ValueError as e:
+            cli_usage_error(str(e))
+
+    cli_ext = arg_val("--ext", require_value="--ext" in args)
+    valid_exts = tuple(EXTENSIONS.keys())
+    if cli_ext and cli_ext not in valid_exts:
+        cli_usage_error(f"Unknown extension '{cli_ext}'. Expected one of: {', '.join(valid_exts)}")
+
     if "--import-codex" in args:
-        path = arg_val("--import-codex")
-        name = arg_val("--name")
+        path = arg_val("--import-codex", require_value=True)
+        name = arg_val("--name", require_value=True)
         if not path or not name:
-            print("Usage: parse_vscdb.py --import-codex <auth.json> --name <account_name>")
-            sys.exit(1)
-        import_codex_auth(path, name, arg_val("--ext"))
+            cli_usage_error(f"Usage: parse_vscdb.py --import-codex <auth.json> --name <account_name> [--ext <{ext_spec}>]")
+        import_codex_auth(path, name, cli_ext)
     elif "--save-account" in args:
-        name = arg_val("--save-account")
+        name = arg_val("--save-account", require_value=True)
         if not name:
-            print("Usage: parse_vscdb.py --save-account <name>")
-            sys.exit(1)
-        save_account(name)
+            cli_usage_error(f"Usage: parse_vscdb.py --save-account <name> [--ide <{ide_spec}>] [--ext <{ext_spec}>]")
+        save_account(name, cli_ext)
     elif "--use-account" in args:
-        name = arg_val("--use-account")
+        name = arg_val("--use-account", require_value=True)
         if not name:
-            print("Usage: parse_vscdb.py --use-account <name>")
-            sys.exit(1)
-        use_account(name)
+            cli_usage_error(f"Usage: parse_vscdb.py --use-account <name> [--ide <{ide_spec}>] [--ext <{ext_spec}>]")
+        use_account(name, cli_ext)
     elif "--list-accounts" in args:
         list_accounts()
     elif "--backup" in args:
         backup(arg_val("--backup"))
     elif "--get" in args:
-        pattern = arg_val("--get")
+        pattern = arg_val("--get", require_value=True)
         if not pattern:
-            print("Usage: parse_vscdb.py --get <pattern> [--out file.json]")
-            sys.exit(1)
+            cli_usage_error(f"Usage: parse_vscdb.py --get <pattern> [--out file.json] [--ide <{ide_spec}>]")
         get_key(pattern, arg_val("--out"))
     elif "--restore" in args:
-        path = arg_val("--restore")
+        path = arg_val("--restore", require_value=True)
         if not path:
-            print("Usage: parse_vscdb.py --restore <backup.json> [--key <pattern>]")
-            sys.exit(1)
+            cli_usage_error(f"Usage: parse_vscdb.py --restore <backup.json> [--key <pattern>] [--ide <{ide_spec}>]")
         restore(path, arg_val("--key"))
     else:
         main()
