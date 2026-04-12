@@ -8,9 +8,11 @@ import json
 import os
 import sys
 import base64
-import struct
 import datetime
 from typing import NoReturn
+
+import codex_accounts as codex_store
+import saved_accounts as saved_store
 
 IDE_PATHS = {
     "vscode": {
@@ -51,7 +53,10 @@ def cli_usage_error(message: str) -> NoReturn:
     print(file=sys.stderr)
     print("CLI options:", file=sys.stderr)
     print(f"  --ide <{_cli_choice_spec(IDE_PATHS)}>   Select which state.vscdb / Local State to use", file=sys.stderr)
-    print(f"  --ext <{_cli_choice_spec(EXTENSIONS)}>   Select account target slot", file=sys.stderr)
+    print(f"  --ext <{_cli_choice_spec(IDE_EXTENSIONS)}>   Select IDE account target slot", file=sys.stderr)
+    print("  --save-codex-account <name>   Save current Codex auth.json as a named account", file=sys.stderr)
+    print("  --use-codex-account <name>    Apply a saved Codex account to ~/.codex/auth.json", file=sys.stderr)
+    print("  --import-codex <auth.json>    Import a Codex auth.json as a saved Codex account", file=sys.stderr)
     sys.exit(1)
 
 SEARCH_KEYS = [
@@ -470,49 +475,49 @@ KILO_NEW_KEY = "kilo-new://openai"
 CODEX_AUTH_PATH = os.path.join(os.path.expanduser("~"), ".codex", "auth.json")
 CODEX_KEY = "codex://openai"
 
-# Known extension slots ("kilo-new" and "codex" use file-based auth, not state.vscdb)
-EXTENSIONS = {
+# Known IDE targets ("kilo-new" uses file-based auth, not state.vscdb)
+IDE_EXTENSIONS = {
     "both":      None,
     "kilocode":  "kilocode.kilo-code",
     "roo-cline": "rooveterinaryinc.roo-cline",
     "kilo-new":  KILO_NEW_KEY,
+}
+
+CODEX_TARGETS = {
     "codex":     CODEX_KEY,
 }
+
+EXTENSIONS = {**IDE_EXTENSIONS, **CODEX_TARGETS}
 
 # Friendly names for display (reverse lookup by extensionId)
 _EXT_DISPLAY = {v: k for k, v in EXTENSIONS.items() if v is not None}
 
 
 def _accounts_dir() -> str:
-    os.makedirs(ACCOUNTS_DIR, exist_ok=True)
-    return ACCOUNTS_DIR
+    return saved_store.ensure_accounts_dir(ACCOUNTS_DIR)
 
 
 def _is_kilo_new(ext_sub: str | None) -> bool:
     return ext_sub == KILO_NEW_KEY
 
 
-def _is_codex(ext_sub: str | None) -> bool:
-    return ext_sub == CODEX_KEY
-
-
 def _entry_key_for_ext(ext_id: str) -> str:
-    if _is_kilo_new(ext_id) or _is_codex(ext_id):
+    if _is_kilo_new(ext_id):
         return ext_id
     return f'secret://{{"extensionId":"{ext_id}","key":"{OAUTH_KEY}"}}'
 
 
-def _db_extension_names() -> list[str]:
+def _ide_db_extension_names() -> list[str]:
     return [
         name
-        for name, ext_id in EXTENSIONS.items()
-        if ext_id and not _is_kilo_new(ext_id) and not _is_codex(ext_id)
+        for name, ext_id in IDE_EXTENSIONS.items()
+        if ext_id and not _is_kilo_new(ext_id)
     ]
 
 
-def _normalize_ext_selection(ext: str | list[str] | tuple[str, ...] | None) -> tuple[list[str], str]:
+def _normalize_ide_ext_selection(ext: str | list[str] | tuple[str, ...] | None) -> tuple[list[str], str]:
     if ext is None or ext == "both":
-        names = _db_extension_names()
+        names = _ide_db_extension_names()
         return names, "both"
 
     if isinstance(ext, str):
@@ -521,10 +526,10 @@ def _normalize_ext_selection(ext: str | list[str] | tuple[str, ...] | None) -> t
         items = list(ext)
 
     normalized: list[str] = []
-    valid = {name for name in EXTENSIONS if name != "both"}
+    valid = {name for name in IDE_EXTENSIONS if name != "both"}
     for name in items:
         if name == "both":
-            for db_name in _db_extension_names():
+            for db_name in _ide_db_extension_names():
                 if db_name not in normalized:
                     normalized.append(db_name)
             continue
@@ -540,87 +545,32 @@ def _normalize_ext_selection(ext: str | list[str] | tuple[str, ...] | None) -> t
     return normalized, "+".join(normalized)
 
 
+def saved_account_kind(data: dict) -> str:
+    return saved_store.saved_account_kind(data, CODEX_KEY)
+
+
+def list_saved_accounts(kind: str | None = None) -> list[dict]:
+    return saved_store.list_saved_accounts(_accounts_dir(), CODEX_KEY, kind)
+
+
 def _decode_jwt_exp_ms(token: str | None) -> int:
-    if not token:
-        return 0
-    try:
-        payload_b64 = token.split(".")[1]
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        payload = json.loads(base64.b64decode(payload_b64).decode("utf-8"))
-        return int(payload.get("exp", 0)) * 1000
-    except Exception:
-        return 0
+    return codex_store.decode_jwt_exp_ms(token)
 
 
 def _read_codex_auth() -> dict:
-    if not os.path.exists(CODEX_AUTH_PATH):
-        return {}
-    with open(CODEX_AUTH_PATH, encoding="utf-8") as f:
-        return json.load(f)
+    return codex_store.read_codex_auth(CODEX_AUTH_PATH)
 
 
 def _write_codex_auth(data: dict):
-    os.makedirs(os.path.dirname(CODEX_AUTH_PATH), exist_ok=True)
-    with open(CODEX_AUTH_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    codex_store.write_codex_auth(CODEX_AUTH_PATH, data)
 
 
 def _to_codex_format(value: dict, existing: dict | None = None) -> dict:
-    existing = existing if isinstance(existing, dict) else {}
-    raw_existing_tokens = existing.get("tokens")
-    existing_tokens: dict[str, object]
-    if isinstance(raw_existing_tokens, dict):
-        existing_tokens = raw_existing_tokens
-    else:
-        existing_tokens = {}
-
-    account_id = value.get("accountId") or value.get("account_id", "")
-    id_token = value.get("id_token")
-    if not id_token and existing_tokens.get("account_id") == account_id:
-        id_token = existing_tokens.get("id_token")
-    if not isinstance(id_token, str) or not id_token:
-        raise ValueError(
-            "Codex auth.json requires id_token. It can only be reused from the same Codex account or imported from an existing Codex auth.json."
-        )
-
-    tokens = {
-        "id_token": id_token,
-        "access_token": value.get("access_token") or value.get("access", ""),
-        "refresh_token": value.get("refresh_token") or value.get("refresh", ""),
-        "account_id": account_id,
-    }
-
-    out = dict(existing)
-    out["auth_mode"] = "chatgpt"
-    out["OPENAI_API_KEY"] = None
-    out["tokens"] = tokens
-    out["last_refresh"] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-    return out
+    return codex_store.to_codex_format(value, existing)
 
 
 def _from_codex_format(value: dict) -> dict:
-    raw_tokens = value.get("tokens")
-    tokens: dict[str, object]
-    if isinstance(raw_tokens, dict):
-        tokens = raw_tokens
-    else:
-        tokens = {}
-    access_token = tokens.get("access_token")
-    access_token_str = access_token if isinstance(access_token, str) else ""
-    refresh_token = tokens.get("refresh_token")
-    refresh_token_str = refresh_token if isinstance(refresh_token, str) else ""
-    account_id = tokens.get("account_id")
-    account_id_str = account_id if isinstance(account_id, str) else ""
-    id_token = tokens.get("id_token")
-    id_token_str = id_token if isinstance(id_token, str) else None
-    return {
-        "type": "openai-codex",
-        "access_token": access_token_str,
-        "refresh_token": refresh_token_str,
-        "expires": _decode_jwt_exp_ms(access_token_str),
-        "accountId": account_id_str,
-        "id_token": id_token_str,
-    }
+    return codex_store.from_codex_format(value)
 
 
 # ── Kilo New (auth.json) helpers ──────────────────────────────────────────────
@@ -687,17 +637,7 @@ def read_current_kilo_new_account() -> dict[str, dict]:
 
 def read_current_codex_account() -> dict[str, dict]:
     """Read the currently active Codex account from auth.json."""
-    current = _from_codex_format(_read_codex_auth())
-    fingerprint = account_fingerprint(current)
-    if not fingerprint:
-        return {}
-
-    info = {
-        "accountId": current.get("accountId", "?"),
-        "fingerprint": fingerprint,
-        "expires": current.get("expires"),
-    }
-    return {CODEX_KEY: info}
+    return codex_store.read_current_codex_account(CODEX_AUTH_PATH, CODEX_KEY, account_fingerprint)
 
 
 # ── Current account detection ─────────────────────────────────────────────────
@@ -831,12 +771,33 @@ def read_current_accounts_for_ide(ide: str) -> dict[str, dict]:
     return accounts
 
 
-def _read_current_entries_for_selection(ext_names: list[str]) -> list[dict]:
+def _load_saved_account_data(name: str, expected_kind: str | None = None) -> tuple[str, dict, str]:
+    try:
+        return saved_store.load_saved_account(_accounts_dir(), name, CODEX_KEY, expected_kind)
+    except FileNotFoundError:
+        print(f"Account '{name}' not found.")
+        list_accounts()
+        sys.exit(1)
+    except saved_store.SavedAccountKindMismatchError as exc:
+        actual_kind = exc.actual_kind
+        print(f"Account '{name}' is a {actual_kind} account, expected {expected_kind}.")
+        sys.exit(1)
+
+
+def _saved_codex_entry(data: dict) -> dict | None:
+    entries = data.get("entries", []) if isinstance(data, dict) else []
+    for entry in entries:
+        if entry.get("key") == CODEX_KEY:
+            return entry
+    return None
+
+
+def _read_current_ide_entries_for_selection(ext_names: list[str]) -> list[dict]:
     import shutil
     import tempfile
 
     entries = []
-    db_target_ids = [EXTENSIONS[name] for name in ext_names if name not in ("kilo-new", "codex")]
+    db_target_ids = [IDE_EXTENSIONS[name] for name in ext_names if name != "kilo-new"]
 
     if db_target_ids:
         aes_key = get_aes_key()
@@ -867,95 +828,106 @@ def _read_current_entries_for_selection(ext_names: list[str]) -> list[dict]:
         if openai_entry:
             entries.append({"key": KILO_NEW_KEY, "value": _from_kilo_new_format(openai_entry)})
 
-    if "codex" in ext_names:
-        codex_value = _from_codex_format(_read_codex_auth())
-        if account_fingerprint(codex_value):
-            entries.append({"key": CODEX_KEY, "value": codex_value})
-
     return entries
 
 
-def _write_account_file(name: str, ext_label: str, entries: list[dict]) -> str:
-    out = os.path.join(_accounts_dir(), f"{name}.json")
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump({
-            "name": name,
-            "ext": ext_label,
-            "saved_at": datetime.datetime.now().isoformat(),
-            "entries": entries,
-        }, f, indent=2, ensure_ascii=False)
-    return out
+def _write_account_file(name: str, kind: str, ext_label: str, entries: list[dict]) -> str:
+    return saved_store.write_account_file(_accounts_dir(), CODEX_KEY, name, kind, ext_label, entries)
 
 
-def save_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
-    """Save current openai-codex-oauth-credentials as a named account.
-    ext: 'kilocode', 'roo-cline', 'kilo-new', 'codex', or None (both).
-    """
-    ext_names, ext_label = _normalize_ext_selection(ext)
-    entries = _read_current_entries_for_selection(ext_names)
-    if not entries:
-        print(f"No matching account entries found for {ext_label}.")
-        sys.exit(1)
-
-    out = _write_account_file(name, ext_label, entries)
-
-    print(f"Account '{name}' saved [{ext_label}] ->{out}")
-    for e in entries:
-        v = e["value"]
-        if isinstance(v, dict):
-            print(f"  accountId: {v.get('accountId','?')}")
-            exp = v.get("expires")
+def _print_saved_entries(entries: list[dict]):
+    for entry in entries:
+        value = entry.get("value", {})
+        if isinstance(value, dict):
+            print(f"  accountId: {value.get('accountId','?')}")
+            exp = value.get("expires")
             if exp:
                 exp_dt = datetime.datetime.fromtimestamp(exp / 1000)
                 print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
 
 
-def use_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
-    """Switch to a saved named account.
-
-    The target IDE must be closed before applying changes.
-    ext: override which extension slot to write to.
-    """
-    path = os.path.join(_accounts_dir(), f"{name}.json")
-    if not os.path.exists(path):
-        print(f"Account '{name}' not found.")
-        list_accounts()
+def save_ide_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
+    """Save current IDE-backed account state as a named account."""
+    ext_names, ext_label = _normalize_ide_ext_selection(ext)
+    entries = _read_current_ide_entries_for_selection(ext_names)
+    if not entries:
+        print(f"No matching account entries found for {ext_label}.")
         sys.exit(1)
 
-    ext_names, _ = _normalize_ext_selection(ext)
+    out = _write_account_file(name, "ide", ext_label, entries)
 
-    with open(path, "r", encoding="utf-8") as f:
-        account_data = json.load(f)
+    print(f"Account '{name}' saved [{ext_label}] ->{out}")
+    _print_saved_entries(entries)
+
+
+def save_codex_account(name: str):
+    """Save current Codex auth.json as a named account."""
+    value = _from_codex_format(_read_codex_auth())
+    if not value.get("access_token") or not value.get("refresh_token"):
+        print("ERROR: Codex auth.json is missing access_token or refresh_token.")
+        sys.exit(1)
+    if not value.get("id_token"):
+        print("ERROR: Codex auth.json requires id_token.")
+        sys.exit(1)
+
+    entry = {"key": CODEX_KEY, "value": value}
+    out = _write_account_file(name, "codex", "codex", [entry])
+    print(f"Account '{name}' saved [codex] ->{out}")
+    _print_saved_entries([entry])
+
+
+def save_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
+    """Backward-compatible wrapper for IDE and Codex save flows."""
+    if ext == "codex":
+        save_codex_account(name)
+        return
+    if isinstance(ext, (list, tuple)) and set(ext) == {"codex"}:
+        save_codex_account(name)
+        return
+    if isinstance(ext, (list, tuple)) and "codex" in ext:
+        raise ValueError("Codex uses a dedicated save flow; mixed IDE+Codex saves are no longer supported.")
+    save_ide_account(name, ext)
+
+
+def use_ide_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
+    """Apply a saved IDE-family account to DB slots and/or Kilo New."""
+    _path, account_data, account_kind = _load_saved_account_data(name)
+    if account_kind == "codex":
+        print(f"Account '{name}' is Codex-only and cannot be applied to IDE targets.")
+        sys.exit(1)
+
+    ext_names, _ = _normalize_ide_ext_selection(ext)
 
     entries = account_data.get("entries", [])
-    source = next(iter(entries), None)
+    ide_entries = [entry for entry in entries if entry.get("key") != CODEX_KEY]
+    source = next(iter(ide_entries), None)
     if not source:
-        print(f"No entries in account '{name}'.")
+        print(f"No IDE entries in account '{name}'.")
         sys.exit(1)
 
-    db_target_ids = [EXTENSIONS[name] for name in ext_names if name not in ("kilo-new", "codex")]
-    source_db = next((e for e in entries if e.get("key") not in (KILO_NEW_KEY, CODEX_KEY)), None)
-    source_kilo_new = next((e for e in entries if e.get("key") == KILO_NEW_KEY), None)
-    source_codex = next((e for e in entries if e.get("key") == CODEX_KEY), None)
-    generic_source = source_db or source_codex or source_kilo_new or source
+    db_target_ids = [IDE_EXTENSIONS[target_name] for target_name in ext_names if target_name != "kilo-new"]
+    source_db = next((entry for entry in ide_entries if entry.get("key") != KILO_NEW_KEY), None)
+    source_kilo_new = next((entry for entry in ide_entries if entry.get("key") == KILO_NEW_KEY), None)
+    generic_source = source_db or source_kilo_new or source
 
     if db_target_ids:
         remapped_entries = []
-        for eid in db_target_ids:
-            entry_key = _entry_key_for_ext(eid)
-            existing = next((e for e in entries if e.get("key") == entry_key), None)
+        for ext_id in db_target_ids:
+            entry_key = _entry_key_for_ext(ext_id)
+            existing = next((entry for entry in ide_entries if entry.get("key") == entry_key), None)
             if existing:
                 remapped_entries.append(existing)
                 continue
 
             if not generic_source:
-                print(f"No source entry available for '{eid}'.")
+                print(f"No source entry available for '{ext_id}'.")
                 sys.exit(1)
 
-            print(f"[cross-ext] No '{eid}' key — remapping from: {generic_source['key']}")
+            print(f"[cross-ext] No '{ext_id}' key — remapping from: {generic_source['key']}")
             remapped_entries.append({"key": entry_key, "value": generic_source["value"]})
 
         import tempfile
+
         remapped = {**account_data, "entries": remapped_entries}
         tmp_path = tempfile.mktemp(suffix=".json")
         try:
@@ -966,25 +938,9 @@ def use_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None)
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
-    if "codex" in ext_names:
-        source_entry = source_codex or generic_source
-        if not source_entry:
-            print("No source entry available for 'codex'.")
-            sys.exit(1)
-
-        try:
-            codex_auth = _to_codex_format(source_entry["value"], _read_codex_auth())
-        except ValueError as e:
-            print(f"ERROR: {e}")
-            sys.exit(1)
-        _write_codex_auth(codex_auth)
-        print(f"[codex] Written to {CODEX_AUTH_PATH}")
-        print(f"  accountId: {codex_auth.get('tokens', {}).get('account_id', '?')}")
-
     if "kilo-new" not in ext_names:
         return
 
-    # ── kilo-new: write to auth.json, check Antigravity is closed ────────────
     if is_ide_running("antigravity"):
         print("ERROR: Antigravity is running. Close it before switching accounts.")
         sys.exit(1)
@@ -994,8 +950,7 @@ def use_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None)
         print("No source entry available for 'kilo-new'.")
         sys.exit(1)
 
-    value = source_entry["value"]
-    new_entry = _to_kilo_new_format(value)
+    new_entry = _to_kilo_new_format(source_entry["value"])
     kilo_auth = _read_kilo_auth()
     kilo_auth["openai"] = new_entry
     _write_kilo_auth(kilo_auth)
@@ -1003,35 +958,65 @@ def use_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None)
     print(f"  accountId: {new_entry.get('accountId', '?')}")
 
 
+def use_codex_account(name: str):
+    """Apply a saved Codex account to ~/.codex/auth.json."""
+    _path, account_data, _kind = _load_saved_account_data(name, expected_kind="codex")
+    source_entry = _saved_codex_entry(account_data)
+    if not source_entry:
+        print(f"Account '{name}' does not contain a Codex entry.")
+        sys.exit(1)
+
+    try:
+        codex_auth = _to_codex_format(source_entry["value"], _read_codex_auth())
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+
+    _write_codex_auth(codex_auth)
+    print(f"[codex] Written to {CODEX_AUTH_PATH}")
+    print(f"  accountId: {codex_auth.get('tokens', {}).get('account_id', '?')}")
+
+
+def use_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
+    """Backward-compatible wrapper for IDE and Codex apply flows."""
+    if ext == "codex":
+        use_codex_account(name)
+        return
+    if isinstance(ext, (list, tuple)) and set(ext) == {"codex"}:
+        use_codex_account(name)
+        return
+    if isinstance(ext, (list, tuple)) and "codex" in ext:
+        raise ValueError("Codex uses a dedicated apply flow; mixed IDE+Codex applies are no longer supported.")
+    use_ide_account(name, ext)
+
+
 def list_accounts():
     """List all saved accounts with expiry info."""
-    d = _accounts_dir()
-    files = sorted(f for f in os.listdir(d) if f.endswith(".json"))
-    if not files:
+    records = list_saved_accounts()
+    if not records:
         print("No saved accounts.")
         return
-    print(f"Saved accounts ({len(files)}):")
-    for f in files:
-        name = f[:-5]
-        try:
-            with open(os.path.join(d, f), encoding="utf-8") as fh:
-                data = json.load(fh)
-            saved_at = data.get("saved_at", "?")[:16]
-            # grab first entry with expires
-            exp_str = ""
-            for e in data.get("entries", []):
-                v = e.get("value", {})
-                if isinstance(v, dict) and "expires" in v:
-                    exp_dt = datetime.datetime.fromtimestamp(v["expires"] / 1000)
-                    exp_str = f"  expires {exp_dt.strftime('%Y-%m-%d')}"
-                    break
-            print(f"  {name:<20} saved {saved_at}{exp_str}")
-        except Exception:
+    print(f"Saved accounts ({len(records)}):")
+    for record in records:
+        name = record["name"]
+        if not record["readable"]:
             print(f"  {name}  (unreadable)")
+            continue
+
+        data = record["data"]
+        saved_at = data.get("saved_at", "?")[:16]
+        exp_str = ""
+        for entry in data.get("entries", []):
+            value = entry.get("value", {})
+            if isinstance(value, dict) and "expires" in value:
+                exp_dt = datetime.datetime.fromtimestamp(value["expires"] / 1000)
+                exp_str = f"  expires {exp_dt.strftime('%Y-%m-%d')}"
+                break
+        print(f"  {name:<20} [{record['kind']}] saved {saved_at}{exp_str}")
 
 
-def import_codex_auth(auth_path: str, name: str, ext: str | list[str] | tuple[str, ...] | None = None):
-    """Import tokens from ~/.codex/auth.json and save as a named account."""
+def import_codex_account(auth_path: str, name: str):
+    """Import tokens from a Codex auth.json and save as a Codex account."""
     if not os.path.exists(auth_path):
         print(f"File not found: {auth_path}")
         sys.exit(1)
@@ -1053,26 +1038,29 @@ def import_codex_auth(auth_path: str, name: str, ext: str | list[str] | tuple[st
         print("ERROR: could not decode access token expiry from auth.json")
         sys.exit(1)
 
-    ext_names, ext_label = _normalize_ext_selection(ext)
-    if "codex" in ext_names and not value.get("id_token"):
+    if not value.get("id_token"):
         print("ERROR: Codex import requires id_token in auth.json.")
         sys.exit(1)
-    ext_slots = [EXTENSIONS[name] for name in ext_names]
 
-    entries = [
-        {
-            "key": _entry_key_for_ext(ext_id),
-            "value": value,
-        }
-        for ext_id in ext_slots
-    ]
-
-    out = _write_account_file(name, ext_label, entries)
+    entry = {"key": CODEX_KEY, "value": value}
+    out = _write_account_file(name, "codex", "codex", [entry])
 
     exp_dt = datetime.datetime.fromtimestamp(expires_ms / 1000)
-    print(f"Imported '{name}' [{ext_label}] ->{out}")
+    print(f"Imported '{name}' [codex] ->{out}")
     print(f"  accountId: {account_id}")
     print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
+
+
+def import_codex_auth(auth_path: str, name: str, ext: str | list[str] | tuple[str, ...] | None = None):
+    """Backward-compatible wrapper for Codex auth import."""
+    if isinstance(ext, (list, tuple)):
+        if set(ext) == {"codex"}:
+            import_codex_account(auth_path, name)
+            return
+        raise ValueError("Codex import is now Codex-only; importing directly into IDE targets is no longer supported.")
+    if ext not in (None, "codex"):
+        raise ValueError("Codex import is now Codex-only; importing directly into IDE targets is no longer supported.")
+    import_codex_account(auth_path, name)
 
 
 if __name__ == "__main__":
@@ -1092,7 +1080,7 @@ if __name__ == "__main__":
         return None
 
     ide_spec = _cli_choice_spec(IDE_PATHS)
-    ext_spec = _cli_choice_spec(EXTENSIONS)
+    ext_spec = _cli_choice_spec(IDE_EXTENSIONS)
 
     cli_ide = arg_val("--ide", require_value="--ide" in args)
     if cli_ide:
@@ -1102,7 +1090,7 @@ if __name__ == "__main__":
             cli_usage_error(str(e))
 
     cli_ext = arg_val("--ext", require_value="--ext" in args)
-    valid_exts = tuple(EXTENSIONS.keys())
+    valid_exts = tuple(IDE_EXTENSIONS.keys())
     if cli_ext and cli_ext not in valid_exts:
         cli_usage_error(f"Unknown extension '{cli_ext}'. Expected one of: {', '.join(valid_exts)}")
 
@@ -1110,21 +1098,35 @@ if __name__ == "__main__":
         path = arg_val("--import-codex", require_value=True)
         name = arg_val("--name", require_value=True)
         if not path or not name:
-            cli_usage_error(f"Usage: parse_vscdb.py --import-codex <auth.json> --name <account_name> [--ext <{ext_spec}>]")
+            cli_usage_error("Usage: parse_vscdb.py --import-codex <auth.json> --name <account_name>")
+        if cli_ext:
+            cli_usage_error("--import-codex no longer accepts --ext; it always creates a Codex account.")
         assert path is not None and name is not None
-        import_codex_auth(path, name, cli_ext)
+        import_codex_account(path, name)
+    elif "--save-codex-account" in args:
+        name = arg_val("--save-codex-account", require_value=True)
+        if not name:
+            cli_usage_error("Usage: parse_vscdb.py --save-codex-account <name>")
+        assert name is not None
+        save_codex_account(name)
+    elif "--use-codex-account" in args:
+        name = arg_val("--use-codex-account", require_value=True)
+        if not name:
+            cli_usage_error("Usage: parse_vscdb.py --use-codex-account <name>")
+        assert name is not None
+        use_codex_account(name)
     elif "--save-account" in args:
         name = arg_val("--save-account", require_value=True)
         if not name:
             cli_usage_error(f"Usage: parse_vscdb.py --save-account <name> [--ide <{ide_spec}>] [--ext <{ext_spec}>]")
         assert name is not None
-        save_account(name, cli_ext)
+        save_ide_account(name, cli_ext)
     elif "--use-account" in args:
         name = arg_val("--use-account", require_value=True)
         if not name:
             cli_usage_error(f"Usage: parse_vscdb.py --use-account <name> [--ide <{ide_spec}>] [--ext <{ext_spec}>]")
         assert name is not None
-        use_account(name, cli_ext)
+        use_ide_account(name, cli_ext)
     elif "--list-accounts" in args:
         list_accounts()
     elif "--backup" in args:
