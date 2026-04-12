@@ -23,7 +23,7 @@ class GuiServices:
     btn_act: str
     sel_fg: str
     run_guarded: Callable[..., None]
-    set_status: Callable[[str, bool], None]
+    set_status: Callable[..., None]
     refresh_all: Callable[[], None] = field(default=lambda: None)
 
 
@@ -220,11 +220,11 @@ class IdeAccountsTab:
 
         btn_frame = tk.Frame(self.frame, bg=bg)
         btn_frame.pack(padx=10, pady=(0, 6))
-        tab_button(btn_frame, self.services, "Save current", self.on_save, accent=True)
-        tab_button(btn_frame, self.services, "Use selected", self.on_use)
-        tab_button(btn_frame, self.services, "Delete", self.on_delete)
-        tab_button(btn_frame, self.services, "Refresh", self.on_refresh)
-        tab_button(btn_frame, self.services, "Full backup", self.on_backup)
+        tab_button(btn_frame, self.services, "💾 Save current", self.on_save, accent=True)
+        tab_button(btn_frame, self.services, "▶ Use selected", self.on_use)
+        tab_button(btn_frame, self.services, "🗑 Delete", self.on_delete)
+        tab_button(btn_frame, self.services, "⟳ Refresh", self.on_refresh)
+        tab_button(btn_frame, self.services, "📦 Full backup", self.on_backup)
 
     def selected_exts(self, show_warning=True):
         exts = [name for name in IDE_EXTENSION_ORDER if self.ide_ext_vars[name].get()]
@@ -375,17 +375,17 @@ class IdeAccountsTab:
             return
         try:
             delete_saved_account(self.services.db, name)
-            self.services.set_status(f"Deleted '{name}'", ok=True)
+            self.services.set_status(f"Deleted '{name}'", True)
             self.services.refresh_all()
         except Exception as exc:
-            self.services.set_status(str(exc), ok=False)
+            self.services.set_status(str(exc), False)
 
     def on_backup(self):
-        self.services.run_guarded(self.services.db.backup, success_msg="Full backup saved.")
+        self.services.run_guarded(self.services.db.backup)
 
     def on_refresh(self):
         self.services.refresh_all()
-        self.services.set_status("Refreshed", ok=True)
+        self.services.set_status("Refreshed", True)
 
 
 class CodexTab:
@@ -434,11 +434,11 @@ class CodexTab:
 
         btn_frame = tk.Frame(self.frame, bg=bg)
         btn_frame.pack(padx=10, pady=(0, 6))
-        tab_button(btn_frame, self.services, "Save current Codex", self.on_save, accent=True)
-        tab_button(btn_frame, self.services, "Import Codex auth", self.on_import)
-        tab_button(btn_frame, self.services, "Use selected Codex", self.on_use)
-        tab_button(btn_frame, self.services, "Delete", self.on_delete)
-        tab_button(btn_frame, self.services, "Refresh", self.on_refresh)
+        tab_button(btn_frame, self.services, "💾 Save current Codex", self.on_save, accent=True)
+        tab_button(btn_frame, self.services, "📥 Import Codex auth", self.on_import)
+        tab_button(btn_frame, self.services, "▶ Use selected Codex", self.on_use)
+        tab_button(btn_frame, self.services, "🗑 Delete", self.on_delete)
+        tab_button(btn_frame, self.services, "⟳ Refresh", self.on_refresh)
 
     def update_current_label(self, current_account):
         if current_account:
@@ -508,11 +508,11 @@ class CodexTab:
             return
         try:
             delete_saved_account(self.services.db, name)
-            self.services.set_status(f"Deleted '{name}'", ok=True)
+            self.services.set_status(f"Deleted '{name}'", True)
             self.services.refresh_all()
         except Exception as exc:
-            self.services.set_status(str(exc), ok=False)
+            self.services.set_status(str(exc), False)
 
     def on_refresh(self):
         self.services.refresh_all()
-        self.services.set_status("Refreshed", ok=True)
+        self.services.set_status("Refreshed", True)
