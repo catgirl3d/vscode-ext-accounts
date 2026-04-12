@@ -2,39 +2,50 @@
 
 [🇺🇦 Українська](README.uk.md)
 
-A utility for managing VSCode/Antigravity extension accounts (Kilocode, Roo-Cline, Kilo New).
-It reads and writes account data stored in `state.vscdb` (AES-256-GCM via Windows DPAPI) and `~/.local/share/kilo/auth.json`.
+A GUI utility for managing saved accounts for VSCode/Antigravity extensions and standalone Codex.
+It reads and writes account data stored in `state.vscdb` (AES-256-GCM via Windows DPAPI), `~/.local/share/kilo/auth.json`, and `~/.codex/auth.json`.
 
 ## Use Cases
 
-**Multiple ChatGPT Plus accounts**
+**Switch between multiple IDE accounts**
 
-You have several paid accounts and want to switch between them in Kilocode or Roo-Cline:
+You have several accounts and want to switch them in Kilocode, Roo-Cline, or Kilo New:
 
-1. Log into [codex.openai.com](https://codex.openai.com) with account A
-2. Open GUI → **Import Codex** → give it a name (e.g. `account_a`)
-3. Log into Codex with account B → **Import Codex** → `account_b`
-4. Close VSCode / Antigravity
-5. Select the account in the list → **Use selected** → open the IDE again
+1. Sign in inside the target extension.
+2. Open **IDE Accounts** → tick the slots you want to save → **Save current**.
+3. Repeat for your other accounts.
+4. Close VSCode / Antigravity before applying.
+5. Select the saved account → tick the target slots → **Use selected**.
 
 **Use one login for both extensions**
 
 You authenticated in Roo-Cline and want the same session in Kilocode (or vice versa):
 
-1. Save the current account: **Save current** (select **Both** or the target extension)
+1. Save the current account in **IDE Accounts**.
 2. Close the IDE
-3. Select the saved account → set extension to **Kilocode** → **Use selected**
+3. Select the saved account → tick **Kilocode** and/or **Roo-Cline** → **Use selected**
 
 The token is automatically remapped to the correct extension slot, even if it was originally saved under a different one.
 
-**Use the same account in Kilo New (Antigravity)**
+**Use the same account in Kilo New**
 
 Kilo New stores tokens in `~/.local/share/kilo/auth.json` — a completely separate file from `state.vscdb`.
+That auth file is shared for Kilo New regardless of whether you use it from VSCode or Antigravity.
 The tool handles format conversion automatically:
 
 1. Save the account with any extension (e.g. **Kilocode**)
-2. Close Antigravity
-3. Select the saved account → set extension to **Kilo New** → **Use selected**
+2. Close the IDEs that may currently use Kilo New
+3. Select the saved account → tick **Kilo New** → **Use selected**
+
+**Manage Codex separately**
+
+Codex is not treated like an IDE extension slot. It has its own tab and its own auth file:
+
+1. Open the **Codex** tab.
+2. Use **Save current Codex** to snapshot the current `~/.codex/auth.json`, or **Import Codex auth** to import another Codex auth file.
+3. Select a saved Codex account → **Use selected Codex** to write it back to `~/.codex/auth.json`.
+
+`IDE -> Codex` import/apply is intentionally not supported because Codex requires `id_token`.
 
 ## Requirements
 
@@ -50,44 +61,43 @@ python gui.py
 
 ![VSCode Account Manager](1.png)
 
-The GUI provides:
-- **Save current** — save the active account
-- **Import Codex** — import an OAuth token from `~/.codex/auth.json`
-- **Use selected** — apply a saved account (the selected IDE must be closed)
-- **Delete** — remove a saved account
+The app has two tabs: **IDE Accounts** and **Codex**.
 
 The **IDE** selector at the top chooses which IDE the GUI shows and targets (VSCode / Antigravity).
 
 The **IDE Accounts** tab uses extension checkboxes to control which IDE slots are read or written:
 - **Kilocode** — only `kilocode.kilo-code` (`state.vscdb`)
 - **Roo-Cline** — only `rooveterinaryinc.roo-cline` (`state.vscdb`)
-- **Kilo New** — `~/.local/share/kilo/auth.json` (new Kilocode engine inside Antigravity)
+- **Kilo New** — `~/.local/share/kilo/auth.json` (shared Kilo New auth, not `state.vscdb`)
+
+The **IDE Accounts** tab provides:
+- **Save current** — save the selected IDE/Kilo New account state
+- **Use selected** — apply a saved IDE account to the checked targets
+- **Delete** — remove a saved IDE account
+- **Refresh** — reload current state and saved accounts
+- **Full backup** — create a real ZIP snapshot of the app storages (`state.vscdb`, `Local State`, Kilo New auth, Codex auth)
 
 The **Active** column shows where each account is currently applied: `VS` (VSCode), `AG` (Antigravity), `KN` (Kilo New).
 
 The **Codex** tab is separate because Codex stores its token set in `~/.codex/auth.json` and requires `id_token`.
 
-## GUI Workflow
+The **Codex** tab provides:
+- **Save current Codex** — save the current `~/.codex/auth.json`
+- **Import Codex auth** — import another Codex auth file into saved accounts
+- **Use selected Codex** — write a saved Codex account to `~/.codex/auth.json`
+- **Delete** — remove a saved Codex account
+- **Refresh** — reload current Codex state and saved accounts
 
-```bash
-python gui.py
-```
+### Notes
 
-### IDE Accounts tab
+- Choose **VSCode** or **Antigravity** at the top of **IDE Accounts**.
+- Tick one or more extension checkboxes before **Save current** or **Use selected**.
+- The target IDE must stay closed while **Use selected** is applying changes.
+- Saved accounts are stored in the local `accounts/` directory.
+- Before the app writes to IDE/Kilo New/Codex storage, it creates an automatic pre-write ZIP backup of the affected files.
+- `Full backup` warns only when required files for the current IDE are missing, reports other absent storages as skipped/optional, and fails if no target files exist at all.
 
-- Choose **VSCode** or **Antigravity** at the top.
-- Tick one or more extension checkboxes: **Kilocode**, **Roo-Cline**, **Kilo New**.
-- Use **Save current** to store the currently active account state under a name.
-- Use **Use selected** to apply a saved account to the checked targets.
-- Use **Full backup** to create a JSON backup of matched secrets from the selected IDE storage.
-
-`Kilo New` always reads from and writes to `~/.local/share/kilo/auth.json`, even though it is controlled from the IDE tab.
-
-### Codex tab
-
-- **Save current Codex** saves the current `~/.codex/auth.json` as a named account.
-- **Import Codex auth** imports an existing Codex `auth.json` into the saved account list.
-- **Use selected Codex** writes a saved Codex account back to `~/.codex/auth.json`.
+`Kilo New` always reads from and writes to `~/.local/share/kilo/auth.json`, and that file is used by Kilo New in both VSCode and Antigravity.
 
 Codex is intentionally isolated from IDE account switching. `IDE -> Codex` import/apply is not supported.
 
@@ -102,15 +112,7 @@ If you launch `python parse_vscdb.py` directly, it exits immediately with a shor
 | VSCode secrets | `%APPDATA%\Code\User\globalStorage\state.vscdb` |
 | Antigravity secrets | `%APPDATA%\Antigravity\User\globalStorage\state.vscdb` |
 | Kilo New auth | `~/.local/share/kilo/auth.json` |
+| Codex auth | `~/.codex/auth.json` |
+| Saved account profiles | `accounts/*.json` |
 
 `state.vscdb` encryption key is read from `Local State` via Windows DPAPI — only works under the same Windows user.
-
-## Keys stored in state.vscdb
-
-| Key | Contents |
-|-----|---------|
-| `openai-codex-oauth-credentials` | ChatGPT Codex OAuth tokens (access + refresh) |
-| `openAiApiKey` | OpenAI API key |
-| `openRouterApiKey` | OpenRouter API key |
-| `geminiApiKey` | Gemini API key |
-| `roo_cline_config_api_config` | Roo-Cline provider configuration |
