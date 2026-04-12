@@ -1,9 +1,9 @@
-# vscode_inject
+# vscode-ext-accounts
 
 [🇬🇧 English](README.md)
 
-Утиліта для керування акаунтами VSCode-розширень (Kilocode, Roo-Cline).
-Читає та записує секрети з `state.vscdb`, підтримує розшифровку v10 AES-256-GCM (Windows DPAPI).
+Утиліта для керування акаунтами розширень VSCode/Antigravity (Kilocode, Roo-Cline, Kilo New).
+Вона читає та записує дані акаунтів, що зберігаються у `state.vscdb` (AES-256-GCM через Windows DPAPI) та `~/.local/share/kilo/auth.json`.
 
 ## Сценарії використання
 
@@ -14,18 +14,27 @@
 1. Залогінитись на [codex.openai.com](https://codex.openai.com) акаунтом A
 2. Відкрити GUI → **Import Codex** → дати ім'я (наприклад `account_a`)
 3. Залогінитись в Codex акаунтом B → **Import Codex** → `account_b`
-4. Закрити VSCode
-5. Вибрати акаунт у списку → **Use selected** → відкрити VSCode
+4. Закрити VSCode / Antigravity
+5. Вибрати акаунт у списку → **Use selected** → знову відкрити IDE
 
 **Використати один логін у обох розширеннях**
 
 Авторизувались у Roo-Cline і хочете ту саму сесію в Kilocode (або навпаки):
 
 1. Зберегти поточний акаунт: **Save current** (вибрати **Both** або потрібне розширення)
-2. Закрити VSCode
+2. Закрити IDE
 3. Вибрати збережений акаунт → встановити розширення **Kilocode** → **Use selected**
 
-Токен автоматично переписується у правильний слот розширення, навіть якщо був збережений під іншим.
+Токен автоматично переписується у правильний слот, навіть якщо спочатку був збережений під іншим.
+
+**Використати той самий акаунт у Kilo New (Antigravity)**
+
+Kilo New зберігає токени в `~/.local/share/kilo/auth.json` — окремий файл, не `state.vscdb`.
+Конвертація формату відбувається автоматично:
+
+1. Зберегти акаунт будь-яким розширенням (наприклад **Kilocode**)
+2. Закрити Antigravity
+3. Вибрати збережений акаунт → встановити розширення **Kilo New** → **Use selected**
 
 ## Вимоги
 
@@ -42,70 +51,59 @@ python gui.py
 ![VSCode Account Manager](1.png)
 
 GUI надає:
-- **Save current** — зберегти поточний акаунт з VSCode під іменем
+- **Save current** — зберегти поточний акаунт
 - **Import Codex** — імпортувати OAuth-токен з `~/.codex/auth.json`
-- **Use selected** — застосувати збережений акаунт (VSCode має бути закритий)
+- **Use selected** — застосувати збережений акаунт (обрана IDE має бути закрита)
 - **Delete** — видалити збережений акаунт
 
-Перемикач **Extension** (вгорі) визначає для якого розширення зберігати/застосовувати:
-- **Both** — обидва розширення одразу
-- **Kilocode** — тільки `kilocode.kilo-code`
-- **Roo-Cline** — тільки `rooveterinaryinc.roo-cline`
+Перемикач **IDE** вгорі визначає, яку IDE GUI показує і куди застосовує зміни (VSCode / Antigravity).
 
-> **Cross-extension:** якщо акаунт збережено для одного розширення (наприклад Roo),
-> його можна застосувати для іншого (Kilocode) — токен автоматично переписується у потрібний слот.
+Вкладка **IDE Accounts** використовує галочки extension-слотів, щоб визначити що саме читати або записувати:
+- **Kilocode** — тільки `kilocode.kilo-code` (`state.vscdb`)
+- **Roo-Cline** — тільки `rooveterinaryinc.roo-cline` (`state.vscdb`)
+- **Kilo New** — `~/.local/share/kilo/auth.json` (новий движок Kilocode всередині Antigravity)
 
-## CLI
+Колонка **Active** показує де акаунт зараз активний: `VS` (VSCode), `AG` (Antigravity), `KN` (Kilo New).
 
-### Керування акаунтами
+Вкладка **Codex** винесена окремо, тому що Codex зберігає токени в `~/.codex/auth.json` і потребує `id_token`.
 
-```bash
-# Зберегти поточний акаунт
-python parse_vscdb.py --save-account work
-
-# Застосувати збережений акаунт (VSCode має бути закритий)
-python parse_vscdb.py --use-account work
-
-# Список збережених акаунтів
-python parse_vscdb.py --list-accounts
-
-# Імпорт з ~/.codex/auth.json
-python parse_vscdb.py --import-codex auth.json --name work
-python parse_vscdb.py --import-codex auth.json --name work --ext kilocode
-```
-
-`--ext` приймає: `kilocode`, `roo-cline` (за замовчуванням — обидва).
-
-### Бекап / Відновлення
+## Робота через GUI
 
 ```bash
-# Бекап усіх секретів у JSON
-python parse_vscdb.py --backup
-python parse_vscdb.py --backup my_backup.json
-
-# Відновити з бекапу
-python parse_vscdb.py --restore my_backup.json
-python parse_vscdb.py --restore my_backup.json --key openai-codex-oauth-credentials
+python gui.py
 ```
 
-### Перегляд
+### Вкладка IDE Accounts
 
-```bash
-# Вивести всі знайдені секрети в термінал
-python parse_vscdb.py
+- Оберіть **VSCode** або **Antigravity** зверху.
+- Відмітьте одну чи кілька галочок: **Kilocode**, **Roo-Cline**, **Kilo New**.
+- **Save current** зберігає поточний активний стан акаунтів під заданим ім'ям.
+- **Use selected** застосовує вибраний збережений акаунт до відмічених слотів.
+- **Full backup** створює JSON-бекап знайдених секретів для вибраного IDE-сховища.
 
-# Експорт ключів за патерном
-python parse_vscdb.py --get openai-codex-oauth-credentials
-python parse_vscdb.py --get kilocode --out kilocode_profile.json
-```
+`Kilo New` завжди читається і записується через `~/.local/share/kilo/auth.json`, хоча керується з IDE-вкладки.
 
-## Де знаходиться state.vscdb
+### Вкладка Codex
 
-```
-%APPDATA%\Code\User\globalStorage\state.vscdb
-```
+- **Save current Codex** зберігає поточний `~/.codex/auth.json` як окремий акаунт.
+- **Import Codex auth** імпортує існуючий Codex `auth.json` у список збережених акаунтів.
+- **Use selected Codex** записує збережений Codex-акаунт назад у `~/.codex/auth.json`.
 
-Ключ шифрування береться з `%APPDATA%\Code\Local State` через Windows DPAPI — працює тільки під тим самим користувачем Windows.
+Codex навмисно ізольований від IDE-перемикань. Сценарій `IDE -> Codex` не підтримується.
+
+`parse_vscdb.py` тепер є backend-модулем для GUI. Використовуйте `python gui.py`.
+
+Якщо запустити `python parse_vscdb.py` напряму, скрипт одразу завершиться коротким повідомленням про GUI-only режим.
+
+## Місця зберігання
+
+| Сховище | Шлях |
+|---------|------|
+| VSCode секрети | `%APPDATA%\Code\User\globalStorage\state.vscdb` |
+| Antigravity секрети | `%APPDATA%\Antigravity\User\globalStorage\state.vscdb` |
+| Kilo New авторизація | `~/.local/share/kilo/auth.json` |
+
+Ключ шифрування `state.vscdb` береться з `Local State` через Windows DPAPI — працює тільки під тим самим користувачем Windows.
 
 ## Що зберігається в state.vscdb
 

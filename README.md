@@ -2,8 +2,8 @@
 
 [🇺🇦 Українська](README.uk.md)
 
-A utility for managing VSCode extension accounts (Kilocode, Roo-Cline).
-Reads and writes secrets from `state.vscdb` with v10 AES-256-GCM decryption (Windows DPAPI).
+A utility for managing VSCode/Antigravity extension accounts (Kilocode, Roo-Cline, Kilo New).
+It reads and writes account data stored in `state.vscdb` (AES-256-GCM via Windows DPAPI) and `~/.local/share/kilo/auth.json`.
 
 ## Use Cases
 
@@ -14,18 +14,27 @@ You have several paid accounts and want to switch between them in Kilocode or Ro
 1. Log into [codex.openai.com](https://codex.openai.com) with account A
 2. Open GUI → **Import Codex** → give it a name (e.g. `account_a`)
 3. Log into Codex with account B → **Import Codex** → `account_b`
-4. Close VSCode
-5. Select the account in the list → **Use selected** → open VSCode
+4. Close VSCode / Antigravity
+5. Select the account in the list → **Use selected** → open the IDE again
 
 **Use one login for both extensions**
 
 You authenticated in Roo-Cline and want the same session in Kilocode (or vice versa):
 
 1. Save the current account: **Save current** (select **Both** or the target extension)
-2. Close VSCode
+2. Close the IDE
 3. Select the saved account → set extension to **Kilocode** → **Use selected**
 
-The token is automatically remapped to the correct extension slot even if it was originally saved under a different one.
+The token is automatically remapped to the correct extension slot, even if it was originally saved under a different one.
+
+**Use the same account in Kilo New (Antigravity)**
+
+Kilo New stores tokens in `~/.local/share/kilo/auth.json` — a completely separate file from `state.vscdb`.
+The tool handles format conversion automatically:
+
+1. Save the account with any extension (e.g. **Kilocode**)
+2. Close Antigravity
+3. Select the saved account → set extension to **Kilo New** → **Use selected**
 
 ## Requirements
 
@@ -42,70 +51,59 @@ python gui.py
 ![VSCode Account Manager](1.png)
 
 The GUI provides:
-- **Save current** — save the active VSCode account under a name
+- **Save current** — save the active account
 - **Import Codex** — import an OAuth token from `~/.codex/auth.json`
-- **Use selected** — apply a saved account (VSCode must be closed)
+- **Use selected** — apply a saved account (the selected IDE must be closed)
 - **Delete** — remove a saved account
 
-The **Extension** selector at the top controls which extension to target:
-- **Both** — both extensions at once
-- **Kilocode** — only `kilocode.kilo-code`
-- **Roo-Cline** — only `rooveterinaryinc.roo-cline`
+The **IDE** selector at the top chooses which IDE the GUI shows and targets (VSCode / Antigravity).
 
-> **Cross-extension:** if an account was saved for one extension (e.g. Roo),
-> it can be applied to another (Kilocode) — the token is automatically remapped to the correct slot.
+The **IDE Accounts** tab uses extension checkboxes to control which IDE slots are read or written:
+- **Kilocode** — only `kilocode.kilo-code` (`state.vscdb`)
+- **Roo-Cline** — only `rooveterinaryinc.roo-cline` (`state.vscdb`)
+- **Kilo New** — `~/.local/share/kilo/auth.json` (new Kilocode engine inside Antigravity)
 
-## CLI
+The **Active** column shows where each account is currently applied: `VS` (VSCode), `AG` (Antigravity), `KN` (Kilo New).
 
-### Account management
+The **Codex** tab is separate because Codex stores its token set in `~/.codex/auth.json` and requires `id_token`.
 
-```bash
-# Save current account
-python parse_vscdb.py --save-account work
-
-# Apply a saved account (VSCode must be closed)
-python parse_vscdb.py --use-account work
-
-# List saved accounts
-python parse_vscdb.py --list-accounts
-
-# Import from ~/.codex/auth.json
-python parse_vscdb.py --import-codex auth.json --name work
-python parse_vscdb.py --import-codex auth.json --name work --ext kilocode
-```
-
-`--ext` accepts: `kilocode`, `roo-cline` (default: both).
-
-### Backup / Restore
+## GUI Workflow
 
 ```bash
-# Backup all secrets to JSON
-python parse_vscdb.py --backup
-python parse_vscdb.py --backup my_backup.json
-
-# Restore from backup
-python parse_vscdb.py --restore my_backup.json
-python parse_vscdb.py --restore my_backup.json --key openai-codex-oauth-credentials
+python gui.py
 ```
 
-### Inspect
+### IDE Accounts tab
 
-```bash
-# Print all found secrets to terminal
-python parse_vscdb.py
+- Choose **VSCode** or **Antigravity** at the top.
+- Tick one or more extension checkboxes: **Kilocode**, **Roo-Cline**, **Kilo New**.
+- Use **Save current** to store the currently active account state under a name.
+- Use **Use selected** to apply a saved account to the checked targets.
+- Use **Full backup** to create a JSON backup of matched secrets from the selected IDE storage.
 
-# Export keys matching a pattern
-python parse_vscdb.py --get openai-codex-oauth-credentials
-python parse_vscdb.py --get kilocode --out kilocode_profile.json
-```
+`Kilo New` always reads from and writes to `~/.local/share/kilo/auth.json`, even though it is controlled from the IDE tab.
 
-## Location of state.vscdb
+### Codex tab
 
-```
-%APPDATA%\Code\User\globalStorage\state.vscdb
-```
+- **Save current Codex** saves the current `~/.codex/auth.json` as a named account.
+- **Import Codex auth** imports an existing Codex `auth.json` into the saved account list.
+- **Use selected Codex** writes a saved Codex account back to `~/.codex/auth.json`.
 
-The encryption key is read from `%APPDATA%\Code\Local State` via Windows DPAPI — only works under the same Windows user.
+Codex is intentionally isolated from IDE account switching. `IDE -> Codex` import/apply is not supported.
+
+`parse_vscdb.py` is now a backend module for the GUI. Run `python gui.py` instead.
+
+If you launch `python parse_vscdb.py` directly, it exits immediately with a short GUI-only message.
+
+## Storage locations
+
+| Storage | Path |
+|---------|------|
+| VSCode secrets | `%APPDATA%\Code\User\globalStorage\state.vscdb` |
+| Antigravity secrets | `%APPDATA%\Antigravity\User\globalStorage\state.vscdb` |
+| Kilo New auth | `~/.local/share/kilo/auth.json` |
+
+`state.vscdb` encryption key is read from `Local State` via Windows DPAPI — only works under the same Windows user.
 
 ## Keys stored in state.vscdb
 
