@@ -9,7 +9,6 @@ import os
 import sys
 import base64
 import datetime
-from typing import NoReturn
 
 import codex_accounts as codex_store
 import saved_accounts as saved_store
@@ -43,21 +42,6 @@ def set_ide(name: str):
     LOCAL_STATE_PATH = cfg["local_state"]
     CURRENT_IDE = name
 
-
-def _cli_choice_spec(values) -> str:
-    return "|".join(values)
-
-
-def cli_usage_error(message: str) -> NoReturn:
-    print(message, file=sys.stderr)
-    print(file=sys.stderr)
-    print("CLI options:", file=sys.stderr)
-    print(f"  --ide <{_cli_choice_spec(IDE_PATHS)}>   Select which state.vscdb / Local State to use", file=sys.stderr)
-    print(f"  --ext <{_cli_choice_spec(IDE_EXTENSIONS)}>   Select IDE account target slot", file=sys.stderr)
-    print("  --save-codex-account <name>   Save current Codex auth.json as a named account", file=sys.stderr)
-    print("  --use-codex-account <name>    Apply a saved Codex account to ~/.codex/auth.json", file=sys.stderr)
-    print("  --import-codex <auth.json>    Import a Codex auth.json as a saved Codex account", file=sys.stderr)
-    sys.exit(1)
 
 SEARCH_KEYS = [
     "kilocode", "kilo-code", "kilo_code",
@@ -128,88 +112,6 @@ def decrypt_value(raw: bytes, aes_key: bytes | None) -> str:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main():
-    if not os.path.exists(DB_PATH):
-        print(f"DB not found: {DB_PATH}")
-        sys.exit(1)
-
-    print(f"DB: {DB_PATH}\n")
-
-    aes_key = get_aes_key()
-    if aes_key:
-        print(f"AES key obtained ({len(aes_key)} bytes)\n")
-    else:
-        print("AES key unavailable — encrypted values will not be decrypted\n")
-
-    # Copy DB to temp to avoid lock issues
-    import shutil, tempfile
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    shutil.copy2(DB_PATH, tmp.name)
-
-    con = sqlite3.connect(tmp.name)
-    cur = con.execute("SELECT key, value FROM ItemTable ORDER BY key")
-
-    results = []
-    for key, value in cur:
-        k_lower = key.lower()
-        if any(s in k_lower for s in SEARCH_KEYS):
-            if isinstance(value, bytes):
-                decoded = decrypt_value(value, aes_key)
-            elif isinstance(value, str):
-                # May be JSON with {"type":"Buffer","data":[...]} from VSCode secret storage
-                try:
-                    obj = json.loads(value)
-                    if isinstance(obj, dict) and obj.get("type") == "Buffer" and "data" in obj:
-                        raw = bytes(obj["data"])
-                        decoded = decrypt_value(raw, aes_key)
-                    else:
-                        decoded = value
-                except Exception:
-                    decoded = value
-            else:
-                decoded = str(value) if value is not None else ""
-            results.append((key, decoded))
-
-    con.close()
-    os.unlink(tmp.name)
-
-    # Always show all keys for reference
-    tmp2 = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp2.close()
-    shutil.copy2(DB_PATH, tmp2.name)
-    con2 = sqlite3.connect(tmp2.name)
-    all_keys = [r[0] for r in con2.execute("SELECT key FROM ItemTable ORDER BY key")]
-    con2.close()
-    os.unlink(tmp2.name)
-
-    if not results:
-        print("No matching keys found.")
-        print(f"\nSearched for: {SEARCH_KEYS}")
-        print("\nAll keys in DB:")
-        for k in all_keys:
-            print(" ", k)
-        return
-
-    print(f"All keys in DB ({len(all_keys)} total):")
-    for k in all_keys:
-        marker = " <--" if any(s in k.lower() for s in SEARCH_KEYS) else ""
-        print(f"  {k}{marker}")
-    print()
-
-    for key, value in results:
-        print(f"{'='*60}")
-        print(f"KEY: {key}")
-        print(f"VALUE:")
-        # Try pretty-print JSON
-        try:
-            parsed = json.loads(value)
-            print(json.dumps(parsed, indent=2, ensure_ascii=False))
-        except Exception:
-            print(value)
-        print()
-
-
 def is_ide_running(ide: str | None = None) -> bool:
     """Check if the given IDE process is currently running."""
     import subprocess
@@ -252,56 +154,6 @@ def _decode_entry(value, aes_key):
             pass
         return value
     return str(value) if value is not None else ""
-
-
-def get_key(pattern: str, out_path: str | None = None):
-    """Extract keys matching pattern from DB into a profile JSON file."""
-    import shutil, tempfile
-    if not os.path.exists(DB_PATH):
-        print(f"DB not found: {DB_PATH}")
-        sys.exit(1)
-
-    aes_key = get_aes_key()
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    shutil.copy2(DB_PATH, tmp.name)
-    con = sqlite3.connect(tmp.name)
-
-    matched = []
-    for key, value in con.execute("SELECT key, value FROM ItemTable ORDER BY key"):
-        if pattern.lower() in key.lower():
-            decoded = _decode_entry(value, aes_key)
-            try:
-                decoded_parsed = json.loads(decoded)
-            except Exception:
-                decoded_parsed = decoded
-            matched.append({"key": key, "value": decoded_parsed})
-
-    con.close()
-    os.unlink(tmp.name)
-
-    if not matched:
-        print(f"No keys matching '{pattern}'")
-        return
-
-    profile = {
-        "created_at": datetime.datetime.now().isoformat(),
-        "source": DB_PATH,
-        "filter": pattern,
-        "entries": matched,
-    }
-
-    if out_path is None:
-        safe = pattern.replace("/", "_").replace(":", "_").replace('"', "").replace(" ", "_")
-        out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"profile_{safe}.json")
-
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(profile, f, indent=2, ensure_ascii=False)
-
-    print(f"Saved {len(matched)} key(s) ->{out_path}")
-    for e in matched:
-        print(f"  {e['key']}")
 
 
 def restore(backup_path: str, key_filter: str | None = None):
@@ -553,10 +405,6 @@ def list_saved_accounts(kind: str | None = None) -> list[dict]:
     return saved_store.list_saved_accounts(_accounts_dir(), CODEX_KEY, kind)
 
 
-def _decode_jwt_exp_ms(token: str | None) -> int:
-    return codex_store.decode_jwt_exp_ms(token)
-
-
 def _read_codex_auth() -> dict:
     return codex_store.read_codex_auth(CODEX_AUTH_PATH)
 
@@ -776,7 +624,6 @@ def _load_saved_account_data(name: str, expected_kind: str | None = None) -> tup
         return saved_store.load_saved_account(_accounts_dir(), name, CODEX_KEY, expected_kind)
     except FileNotFoundError:
         print(f"Account '{name}' not found.")
-        list_accounts()
         sys.exit(1)
     except saved_store.SavedAccountKindMismatchError as exc:
         actual_kind = exc.actual_kind
@@ -876,19 +723,6 @@ def save_codex_account(name: str):
     _print_saved_entries([entry])
 
 
-def save_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
-    """Backward-compatible wrapper for IDE and Codex save flows."""
-    if ext == "codex":
-        save_codex_account(name)
-        return
-    if isinstance(ext, (list, tuple)) and set(ext) == {"codex"}:
-        save_codex_account(name)
-        return
-    if isinstance(ext, (list, tuple)) and "codex" in ext:
-        raise ValueError("Codex uses a dedicated save flow; mixed IDE+Codex saves are no longer supported.")
-    save_ide_account(name, ext)
-
-
 def use_ide_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
     """Apply a saved IDE-family account to DB slots and/or Kilo New."""
     _path, account_data, account_kind = _load_saved_account_data(name)
@@ -977,44 +811,6 @@ def use_codex_account(name: str):
     print(f"  accountId: {codex_auth.get('tokens', {}).get('account_id', '?')}")
 
 
-def use_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
-    """Backward-compatible wrapper for IDE and Codex apply flows."""
-    if ext == "codex":
-        use_codex_account(name)
-        return
-    if isinstance(ext, (list, tuple)) and set(ext) == {"codex"}:
-        use_codex_account(name)
-        return
-    if isinstance(ext, (list, tuple)) and "codex" in ext:
-        raise ValueError("Codex uses a dedicated apply flow; mixed IDE+Codex applies are no longer supported.")
-    use_ide_account(name, ext)
-
-
-def list_accounts():
-    """List all saved accounts with expiry info."""
-    records = list_saved_accounts()
-    if not records:
-        print("No saved accounts.")
-        return
-    print(f"Saved accounts ({len(records)}):")
-    for record in records:
-        name = record["name"]
-        if not record["readable"]:
-            print(f"  {name}  (unreadable)")
-            continue
-
-        data = record["data"]
-        saved_at = data.get("saved_at", "?")[:16]
-        exp_str = ""
-        for entry in data.get("entries", []):
-            value = entry.get("value", {})
-            if isinstance(value, dict) and "expires" in value:
-                exp_dt = datetime.datetime.fromtimestamp(value["expires"] / 1000)
-                exp_str = f"  expires {exp_dt.strftime('%Y-%m-%d')}"
-                break
-        print(f"  {name:<20} [{record['kind']}] saved {saved_at}{exp_str}")
-
-
 def import_codex_account(auth_path: str, name: str):
     """Import tokens from a Codex auth.json and save as a Codex account."""
     if not os.path.exists(auth_path):
@@ -1051,97 +847,5 @@ def import_codex_account(auth_path: str, name: str):
     print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
 
 
-def import_codex_auth(auth_path: str, name: str, ext: str | list[str] | tuple[str, ...] | None = None):
-    """Backward-compatible wrapper for Codex auth import."""
-    if isinstance(ext, (list, tuple)):
-        if set(ext) == {"codex"}:
-            import_codex_account(auth_path, name)
-            return
-        raise ValueError("Codex import is now Codex-only; importing directly into IDE targets is no longer supported.")
-    if ext not in (None, "codex"):
-        raise ValueError("Codex import is now Codex-only; importing directly into IDE targets is no longer supported.")
-    import_codex_account(auth_path, name)
-
-
 if __name__ == "__main__":
-    reconfigure = getattr(sys.stdout, "reconfigure", None)
-    if callable(reconfigure):
-        reconfigure(encoding="utf-8", errors="replace")
-    args = sys.argv[1:]
-
-    def arg_val(flag, require_value=False):
-        """Return value after flag, or None."""
-        if flag in args:
-            idx = args.index(flag)
-            has_value = idx + 1 < len(args) and not args[idx + 1].startswith("--")
-            if require_value and not has_value:
-                cli_usage_error(f"Missing value for {flag}.")
-            return args[idx + 1] if has_value else None
-        return None
-
-    ide_spec = _cli_choice_spec(IDE_PATHS)
-    ext_spec = _cli_choice_spec(IDE_EXTENSIONS)
-
-    cli_ide = arg_val("--ide", require_value="--ide" in args)
-    if cli_ide:
-        try:
-            set_ide(cli_ide)
-        except ValueError as e:
-            cli_usage_error(str(e))
-
-    cli_ext = arg_val("--ext", require_value="--ext" in args)
-    valid_exts = tuple(IDE_EXTENSIONS.keys())
-    if cli_ext and cli_ext not in valid_exts:
-        cli_usage_error(f"Unknown extension '{cli_ext}'. Expected one of: {', '.join(valid_exts)}")
-
-    if "--import-codex" in args:
-        path = arg_val("--import-codex", require_value=True)
-        name = arg_val("--name", require_value=True)
-        if not path or not name:
-            cli_usage_error("Usage: parse_vscdb.py --import-codex <auth.json> --name <account_name>")
-        if cli_ext:
-            cli_usage_error("--import-codex no longer accepts --ext; it always creates a Codex account.")
-        assert path is not None and name is not None
-        import_codex_account(path, name)
-    elif "--save-codex-account" in args:
-        name = arg_val("--save-codex-account", require_value=True)
-        if not name:
-            cli_usage_error("Usage: parse_vscdb.py --save-codex-account <name>")
-        assert name is not None
-        save_codex_account(name)
-    elif "--use-codex-account" in args:
-        name = arg_val("--use-codex-account", require_value=True)
-        if not name:
-            cli_usage_error("Usage: parse_vscdb.py --use-codex-account <name>")
-        assert name is not None
-        use_codex_account(name)
-    elif "--save-account" in args:
-        name = arg_val("--save-account", require_value=True)
-        if not name:
-            cli_usage_error(f"Usage: parse_vscdb.py --save-account <name> [--ide <{ide_spec}>] [--ext <{ext_spec}>]")
-        assert name is not None
-        save_ide_account(name, cli_ext)
-    elif "--use-account" in args:
-        name = arg_val("--use-account", require_value=True)
-        if not name:
-            cli_usage_error(f"Usage: parse_vscdb.py --use-account <name> [--ide <{ide_spec}>] [--ext <{ext_spec}>]")
-        assert name is not None
-        use_ide_account(name, cli_ext)
-    elif "--list-accounts" in args:
-        list_accounts()
-    elif "--backup" in args:
-        backup(arg_val("--backup"))
-    elif "--get" in args:
-        pattern = arg_val("--get", require_value=True)
-        if not pattern:
-            cli_usage_error(f"Usage: parse_vscdb.py --get <pattern> [--out file.json] [--ide <{ide_spec}>]")
-        assert pattern is not None
-        get_key(pattern, arg_val("--out"))
-    elif "--restore" in args:
-        path = arg_val("--restore", require_value=True)
-        if not path:
-            cli_usage_error(f"Usage: parse_vscdb.py --restore <backup.json> [--key <pattern>] [--ide <{ide_spec}>]")
-        assert path is not None
-        restore(path, arg_val("--key"))
-    else:
-        main()
+    raise SystemExit("CLI support removed. Use `python gui.py`.")
