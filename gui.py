@@ -33,7 +33,9 @@ def run_guarded(fn, *args, success_msg=None):
         ok = True
         message = success_msg
         try:
-            fn(*args)
+            result = fn(*args)
+            if message is None and isinstance(result, str):
+                message = result
         except SystemExit as exc:
             ok = False
             message = f"Aborted (code {exc.code})"

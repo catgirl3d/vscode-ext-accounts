@@ -9,6 +9,7 @@ import os
 import sys
 import base64
 import datetime
+import zipfile
 
 import codex_accounts as codex_store
 import saved_accounts as saved_store
@@ -42,13 +43,6 @@ def set_ide(name: str):
     LOCAL_STATE_PATH = cfg["local_state"]
     CURRENT_IDE = name
 
-
-SEARCH_KEYS = [
-    "kilocode", "kilo-code", "kilo_code",
-    "chatgpt", "openai",
-    "github.copilot",
-    "secret", "token", "cookie", "auth", "session",
-]
 
 # ── Decryption ────────────────────────────────────────────────────────────────
 
@@ -156,8 +150,190 @@ def _decode_entry(value, aes_key):
     return str(value) if value is not None else ""
 
 
-def restore(backup_path: str, key_filter: str | None = None):
-    """Restore secrets from a backup JSON into state.vscdb.
+def _backups_dir() -> str:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _default_backup_zip_path(prefix: str) -> str:
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    ide = CURRENT_IDE.replace(" ", "_")
+    return os.path.join(_backups_dir(), f"{prefix}_{ide}_{ts}.zip")
+
+
+def _full_backup_targets() -> list[dict[str, object]]:
+    targets: list[dict[str, object]] = []
+    for ide_name, cfg in IDE_PATHS.items():
+        label = cfg["label"]
+        is_current = ide_name == CURRENT_IDE
+        targets.append({
+            "source": cfg["db"],
+            "archive_path": f"ides/{ide_name}/state.vscdb",
+            "label": f"{label} state.vscdb",
+            "required": is_current,
+        })
+        targets.append({
+            "source": cfg["local_state"],
+            "archive_path": f"ides/{ide_name}/Local State",
+            "label": f"{label} Local State",
+            "required": is_current,
+        })
+
+    targets.append({
+        "source": KILO_AUTH_PATH,
+        "archive_path": "shared/kilo/auth.json",
+        "label": "Kilo New auth.json",
+        "required": False,
+    })
+    targets.append({
+        "source": CODEX_AUTH_PATH,
+        "archive_path": "shared/codex/auth.json",
+        "label": "Codex auth.json",
+        "required": False,
+    })
+    return targets
+
+
+def _prewrite_backup_targets(*, include_db: bool, include_kilo: bool, include_codex: bool) -> list[dict[str, object]]:
+    targets: list[dict[str, object]] = []
+    if include_db:
+        cfg = IDE_PATHS[CURRENT_IDE]
+        ide_name = CURRENT_IDE
+        label = cfg["label"]
+        targets.append({
+            "source": cfg["db"],
+            "archive_path": f"prewrite/{ide_name}/state.vscdb",
+            "label": f"{label} state.vscdb",
+            "required": True,
+        })
+        targets.append({
+            "source": cfg["local_state"],
+            "archive_path": f"prewrite/{ide_name}/Local State",
+            "label": f"{label} Local State",
+            "required": True,
+        })
+    if include_kilo:
+        targets.append({
+            "source": KILO_AUTH_PATH,
+            "archive_path": "prewrite/shared/kilo/auth.json",
+            "label": "Kilo New auth.json",
+            "required": False,
+        })
+    if include_codex:
+        targets.append({
+            "source": CODEX_AUTH_PATH,
+            "archive_path": "prewrite/shared/codex/auth.json",
+            "label": "Codex auth.json",
+            "required": False,
+        })
+    return targets
+
+
+def _create_backup_archive(targets: list[dict[str, object]], out_path: str | None = None, *, backup_kind: str, note: str | None = None, fail_on_required_missing: bool = False) -> dict:
+    if out_path is None:
+        out_path = _default_backup_zip_path(backup_kind)
+    elif not out_path.lower().endswith(".zip"):
+        out_path = out_path + ".zip"
+
+    manifest = {
+        "version": 2,
+        "kind": backup_kind,
+        "created_at": datetime.datetime.now().isoformat(),
+        "current_ide": CURRENT_IDE,
+        "note": note,
+        "files": [],
+        "warnings": [],
+    }
+
+    for target in targets:
+        source = str(target["source"])
+        archive_path = str(target["archive_path"])
+        label = str(target["label"])
+        exists = os.path.exists(source)
+        entry = {
+            "label": label,
+            "source": source,
+            "archive_path": archive_path,
+            "exists": exists,
+            "required": bool(target.get("required", False)),
+        }
+        if exists:
+            stat = os.stat(source)
+            entry["size"] = stat.st_size
+            entry["modified_at"] = datetime.datetime.fromtimestamp(stat.st_mtime).isoformat()
+        manifest["files"].append(entry)
+
+    missing_entries = [entry for entry in manifest["files"] if not entry["exists"]]
+    required_missing_entries = [entry for entry in missing_entries if entry["required"]]
+    optional_missing_entries = [entry for entry in missing_entries if not entry["required"]]
+    included = sum(1 for entry in manifest["files"] if entry["exists"])
+    total = len(manifest["files"])
+    if required_missing_entries:
+        warning = f"Missing {len(required_missing_entries)} required target file(s)"
+        manifest["warnings"].append(warning)
+    if optional_missing_entries:
+        manifest["warnings"].append(f"Skipped {len(optional_missing_entries)} optional missing file(s)")
+
+    if required_missing_entries:
+        warning = manifest["warnings"][0]
+        print(f"WARNING: {warning}")
+        for entry in required_missing_entries:
+            print(f"  - {entry['label']}: {entry['source']}")
+
+    if optional_missing_entries:
+        print(f"INFO: Skipped {len(optional_missing_entries)} optional missing file(s)")
+        for entry in optional_missing_entries:
+            print(f"  - {entry['label']}: {entry['source']}")
+
+    if included == 0:
+        raise RuntimeError("Backup failed: none of the target files exist.")
+
+    if fail_on_required_missing and required_missing_entries:
+        raise RuntimeError("Backup failed: required target files are missing.")
+
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for entry in manifest["files"]:
+            if entry["exists"]:
+                zf.write(entry["source"], entry["archive_path"])
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+
+    print(f"Backup saved: {out_path}")
+    print(f"Files included: {included}/{total}")
+    return {
+        "path": out_path,
+        "included": included,
+        "total": total,
+        "missing": missing_entries,
+        "required_missing": required_missing_entries,
+        "optional_missing": optional_missing_entries,
+    }
+
+
+def create_prewrite_backup(*, include_db: bool = False, include_kilo: bool = False, include_codex: bool = False, note: str | None = None) -> dict | None:
+    targets = _prewrite_backup_targets(include_db=include_db, include_kilo=include_kilo, include_codex=include_codex)
+    if not targets:
+        return None
+
+    existing_targets = [target for target in targets if os.path.exists(str(target["source"]))]
+    has_required_targets = any(bool(target.get("required", False)) for target in targets)
+    if not existing_targets and not has_required_targets:
+        print("INFO: Skipped pre-write backup because the target file does not exist yet")
+        for target in targets:
+            print(f"  - {target['label']}: {target['source']}")
+        return None
+
+    return _create_backup_archive(targets, backup_kind="prewrite", note=note, fail_on_required_missing=True)
+
+
+def restore(backup_path: str, key_filter: str | None = None, *, create_safety_backup: bool = True):
+    """Restore entry-based JSON data into state.vscdb.
+
+    This is an internal helper used for remapped IDE slot writes.
     The currently selected IDE must be closed before running this.
     """
     if not os.path.exists(backup_path):
@@ -191,13 +367,9 @@ def restore(backup_path: str, key_filter: str | None = None):
         print("ERROR: Cannot get AES key — cannot encrypt values.")
         sys.exit(1)
 
-    # Auto-backup the DB file before any writes
-    import shutil
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    db_backup_path = DB_PATH + f".bak_{ts}"
-    shutil.copy2(DB_PATH, db_backup_path)
-    print(f"DB backed up to: {db_backup_path}")
-    print()
+    if create_safety_backup:
+        create_prewrite_backup(include_db=True, note=f"before restore from {os.path.basename(backup_path)}")
+        print()
 
     print(f"Backup: {backup_path}")
     print(f"Entries to restore: {len(entries)}")
@@ -257,67 +429,14 @@ def restore(backup_path: str, key_filter: str | None = None):
 
 
 def backup(out_path: str | None = None):
-    """Save all matched secrets to a JSON file (read-only from DB)."""
-    if not os.path.exists(DB_PATH):
-        print(f"DB not found: {DB_PATH}")
-        sys.exit(1)
-
-    aes_key = get_aes_key()
-
-    import shutil, tempfile
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    shutil.copy2(DB_PATH, tmp.name)
-
-    con = sqlite3.connect(tmp.name)
-    cur = con.execute("SELECT key, value FROM ItemTable ORDER BY key")
-
-    backup_data = {
-        "created_at": datetime.datetime.now().isoformat(),
-        "source": DB_PATH,
-        "entries": []
-    }
-
-    for key, value in cur:
-        k_lower = key.lower()
-        if not any(s in k_lower for s in SEARCH_KEYS):
-            continue
-
-        if isinstance(value, bytes):
-            decoded = decrypt_value(value, aes_key)
-        elif isinstance(value, str):
-            try:
-                obj = json.loads(value)
-                if isinstance(obj, dict) and obj.get("type") == "Buffer" and "data" in obj:
-                    raw = bytes(obj["data"])
-                    decoded = decrypt_value(raw, aes_key)
-                else:
-                    decoded = value
-            except Exception:
-                decoded = value
-        else:
-            decoded = str(value) if value is not None else ""
-
-        # Try to parse as JSON for cleaner output
-        try:
-            decoded_parsed = json.loads(decoded)
-        except Exception:
-            decoded_parsed = decoded
-
-        backup_data["entries"].append({"key": key, "value": decoded_parsed})
-
-    con.close()
-    os.unlink(tmp.name)
-
-    if out_path is None:
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"vscdb_backup_{ts}.json")
-
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(backup_data, f, indent=2, ensure_ascii=False)
-
-    print(f"Backup saved: {out_path}")
-    print(f"Entries: {len(backup_data['entries'])}")
+    """Create a real full-file backup archive of all storages used by the app."""
+    result = _create_backup_archive(_full_backup_targets(), out_path, backup_kind="full")
+    message = f"Full backup saved ({result['included']}/{result['total']} files)."
+    if result["required_missing"]:
+        message += f" Warning: {len(result['required_missing'])} required file(s) were missing."
+    if result["optional_missing"]:
+        message += f" Skipped {len(result['optional_missing'])} optional missing file(s)."
+    return message
 
 
 ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts")
@@ -744,6 +863,24 @@ def use_ide_account(name: str, ext: str | list[str] | tuple[str, ...] | None = N
     source_kilo_new = next((entry for entry in ide_entries if entry.get("key") == KILO_NEW_KEY), None)
     generic_source = source_db or source_kilo_new or source
 
+    needs_db_write = bool(db_target_ids)
+    needs_kilo_write = "kilo-new" in ext_names
+
+    if needs_db_write:
+        guard_vscode_closed()
+
+    if needs_kilo_write and is_ide_running("antigravity"):
+        print("ERROR: Antigravity is running. Close it before switching accounts.")
+        sys.exit(1)
+
+    if needs_db_write or needs_kilo_write:
+        create_prewrite_backup(
+            include_db=needs_db_write,
+            include_kilo=needs_kilo_write,
+            note=f"before applying IDE account '{name}'",
+        )
+        print()
+
     if db_target_ids:
         remapped_entries = []
         for ext_id in db_target_ids:
@@ -767,17 +904,13 @@ def use_ide_account(name: str, ext: str | list[str] | tuple[str, ...] | None = N
         try:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(remapped, f)
-            restore(tmp_path)
+            restore(tmp_path, create_safety_backup=False)
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
     if "kilo-new" not in ext_names:
         return
-
-    if is_ide_running("antigravity"):
-        print("ERROR: Antigravity is running. Close it before switching accounts.")
-        sys.exit(1)
 
     source_entry = source_kilo_new or generic_source
     if not source_entry:
@@ -799,6 +932,9 @@ def use_codex_account(name: str):
     if not source_entry:
         print(f"Account '{name}' does not contain a Codex entry.")
         sys.exit(1)
+
+    create_prewrite_backup(include_codex=True, note=f"before applying Codex account '{name}'")
+    print()
 
     try:
         codex_auth = _to_codex_format(source_entry["value"], _read_codex_auth())

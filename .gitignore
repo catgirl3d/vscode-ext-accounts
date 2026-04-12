@@ -8,3 +8,8 @@ profile_*.json
 openai-codex-oauth-credentials
 vscdb_backup_*.json
 *.db.bak_*
+.history/*
+.claude/settings.json
+.vscode/settings.json
+
+backups/*
