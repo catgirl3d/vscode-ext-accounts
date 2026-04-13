@@ -11,8 +11,8 @@ import base64
 import datetime
 import zipfile
 
-import codex_accounts as codex_store
-import saved_accounts as saved_store
+from . import codex_accounts as codex_store
+from . import saved_accounts as saved_store
 
 IDE_PATHS = {
     "vscode": {
@@ -150,8 +150,13 @@ def _decode_entry(value, aes_key):
     return str(value) if value is not None else ""
 
 
+PACKAGE_ROOT = os.path.dirname(os.path.abspath(__file__))
+SRC_ROOT = os.path.dirname(PACKAGE_ROOT)
+PROJECT_ROOT = os.path.dirname(SRC_ROOT)
+
+
 def _backups_dir() -> str:
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups")
+    path = os.path.join(PROJECT_ROOT, "backups")
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -439,7 +444,7 @@ def backup(out_path: str | None = None):
     return message
 
 
-ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts")
+ACCOUNTS_DIR = os.path.join(PROJECT_ROOT, "accounts")
 OAUTH_KEY = "openai-codex-oauth-credentials"
 KILO_AUTH_PATH = os.path.join(os.path.expanduser("~"), ".local", "share", "kilo", "auth.json")
 KILO_NEW_KEY = "kilo-new://openai"
@@ -983,5 +988,9 @@ def import_codex_account(auth_path: str, name: str):
     print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
 
 
+def main():
+    raise SystemExit("CLI support removed. Use `python main.py`.")
+
+
 if __name__ == "__main__":
-    raise SystemExit("CLI support removed. Use `python gui.py`.")
+    main()

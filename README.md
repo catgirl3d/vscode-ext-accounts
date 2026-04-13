@@ -56,7 +56,7 @@ pip install cryptography
 ## GUI
 
 ```bash
-python gui.py
+python main.py
 ```
 
 ![VSCode Account Manager](1.png)
@@ -101,9 +101,7 @@ The **Codex** tab provides:
 
 Codex is intentionally isolated from IDE account switching. `IDE -> Codex` import/apply is not supported.
 
-`parse_vscdb.py` is now a backend module for the GUI. Run `python gui.py` instead.
-
-If you launch `python parse_vscdb.py` directly, it exits immediately with a short GUI-only message.
+`parse_vscdb.py` is now a backend module inside `src/vscode_inject/`. Launch the app with `python main.py`.
 
 ## Storage locations
 

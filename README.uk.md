@@ -56,7 +56,7 @@ pip install cryptography
 ## GUI
 
 ```bash
-python gui.py
+python main.py
 ```
 
 ![VSCode Account Manager](1.png)
@@ -101,9 +101,7 @@ python gui.py
 
 Codex навмисно ізольований від IDE-перемикань. Сценарій `IDE -> Codex` не підтримується.
 
-`parse_vscdb.py` тепер є backend-модулем для GUI. Використовуйте `python gui.py`.
-
-Якщо запустити `python parse_vscdb.py` напряму, скрипт одразу завершиться коротким повідомленням про GUI-only режим.
+`parse_vscdb.py` тепер є backend-модулем всередині `src/vscode_inject/`. Запускайте застосунок через `python main.py`.
 
 ## Місця зберігання
 
