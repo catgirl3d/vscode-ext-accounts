@@ -20,12 +20,27 @@ IDE_PATHS = {
         "db": os.path.expandvars(r"%APPDATA%\Code\User\globalStorage\state.vscdb"),
         "local_state": os.path.expandvars(r"%APPDATA%\Code\Local State"),
         "process": "Code.exe",
+        "launch_env": "VSCODE_INJECT_VSCODE_EXE",
+        "launch_commands": ("code",),
+        "launch_paths": (
+            r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
+            r"%ProgramFiles%\Microsoft VS Code\Code.exe",
+            r"%ProgramFiles(x86)%\Microsoft VS Code\Code.exe",
+        ),
     },
     "antigravity": {
         "label": "Antigravity",
         "db": os.path.expandvars(r"%APPDATA%\Antigravity\User\globalStorage\state.vscdb"),
         "local_state": os.path.expandvars(r"%APPDATA%\Antigravity\Local State"),
         "process": "Antigravity.exe",
+        "launch_env": "VSCODE_INJECT_ANTIGRAVITY_EXE",
+        "launch_commands": ("antigravity",),
+        "launch_paths": (
+            r"%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe",
+            r"%LOCALAPPDATA%\Antigravity\Antigravity.exe",
+            r"%ProgramFiles%\Antigravity\Antigravity.exe",
+            r"%ProgramFiles(x86)%\Antigravity\Antigravity.exe",
+        ),
     },
 }
 CURRENT_IDE = "vscode"
@@ -42,6 +57,103 @@ def set_ide(name: str):
     DB_PATH = cfg["db"]
     LOCAL_STATE_PATH = cfg["local_state"]
     CURRENT_IDE = name
+
+
+def _dedupe_candidate_paths(paths: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if not path:
+            continue
+        expanded = os.path.expandvars(path)
+        normalized = os.path.normcase(os.path.normpath(expanded))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(os.path.normpath(expanded))
+    return unique
+
+
+def _windows_app_path_candidates(exe_name: str) -> list[str]:
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    subkeys = [
+        rf"Software\Microsoft\Windows\CurrentVersion\App Paths\{exe_name}",
+        rf"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\{exe_name}",
+    ]
+
+    candidates: list[str] = []
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for subkey in subkeys:
+            try:
+                with winreg.OpenKey(hive, subkey) as key:
+                    value, _value_type = winreg.QueryValueEx(key, None)
+            except OSError:
+                continue
+            candidates.append(str(value))
+
+    return _dedupe_candidate_paths(candidates)
+
+
+def _path_command_candidates(command_names: list[str]) -> list[str]:
+    import shutil
+
+    candidates: list[str] = []
+    for command_name in command_names:
+        if not command_name:
+            continue
+        resolved = shutil.which(command_name)
+        if resolved:
+            candidates.append(resolved)
+
+    return _dedupe_candidate_paths(candidates)
+
+
+def ide_executable_candidates(ide: str | None = None) -> list[str]:
+    cfg = IDE_PATHS[ide or CURRENT_IDE]
+    candidates: list[str] = []
+
+    env_key = cfg.get("launch_env")
+    if env_key:
+        candidates.append(os.environ.get(str(env_key), ""))
+
+    candidates.extend(list(cfg.get("launch_paths", ())))
+
+    process_name = cfg.get("process")
+    if process_name:
+        candidates.extend(_windows_app_path_candidates(str(process_name)))
+
+    launch_commands = list(cfg.get("launch_commands", ()))
+    if process_name:
+        launch_commands.append(str(process_name))
+    candidates.extend(_path_command_candidates(launch_commands))
+
+    return _dedupe_candidate_paths(candidates)
+
+
+def resolve_ide_executable_path(ide: str | None = None) -> str | None:
+    for candidate in ide_executable_candidates(ide):
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def launch_ide(ide: str | None = None) -> str:
+    import subprocess
+
+    ide_name = ide or CURRENT_IDE
+    cfg = IDE_PATHS[ide_name]
+    exe_path = resolve_ide_executable_path(ide_name)
+    if not exe_path:
+        checked = "\n".join(f"  - {path}" for path in ide_executable_candidates(ide_name))
+        hint = f"\nSet {cfg['launch_env']} to the full path if needed." if cfg.get("launch_env") else ""
+        raise RuntimeError(f"{cfg['label']} executable not found.\nChecked:\n{checked or '  - no candidate paths configured'}{hint}")
+
+    subprocess.Popen([exe_path], close_fds=True)
+    return f"Started {cfg['label']}"
 
 
 # ── Decryption ────────────────────────────────────────────────────────────────

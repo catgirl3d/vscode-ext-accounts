@@ -110,6 +110,13 @@ def main():
             refresh_all()
         root.after(100, process_ui_queue)
 
+    def poll_ide_runtime_state():
+        try:
+            ide_tab.refresh_runtime_state()
+        except Exception:
+            pass
+        root.after(1000, poll_ide_runtime_state)
+
     services.refresh_all = refresh_all
 
     status_label = tk.Label(root, textvariable=status_var, bg=BG, fg="#2d8a4e", font=("Segoe UI", 9), anchor="w")
@@ -117,6 +124,7 @@ def main():
 
     refresh_all()
     process_ui_queue()
+    poll_ide_runtime_state()
     root.update_idletasks()
     root.geometry(f"{max(root.winfo_reqwidth(), WINDOW_WIDTH)}x{root.winfo_reqheight()}")
     root.mainloop()

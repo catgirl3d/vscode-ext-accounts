@@ -126,6 +126,7 @@ class IdeAccountsTab:
             "kilo-new": tk.BooleanVar(value=False),
         }
         self.current_ide_labels: dict[str, tk.Label] = {}
+        self.run_button_visible = False
 
         self._build()
 
@@ -218,13 +219,26 @@ class IdeAccountsTab:
         self.tree.column("active", width=90, anchor="center")
         self.tree.pack(padx=10, pady=(0, 6))
 
-        btn_frame = tk.Frame(self.frame, bg=bg)
-        btn_frame.pack(padx=10, pady=(0, 6))
-        tab_button(btn_frame, self.services, "💾 Save current", self.on_save, accent=True)
-        tab_button(btn_frame, self.services, "▶ Use selected", self.on_use)
-        tab_button(btn_frame, self.services, "🗑 Delete", self.on_delete)
-        tab_button(btn_frame, self.services, "⟳ Refresh", self.on_refresh)
-        tab_button(btn_frame, self.services, "📦 Full backup", self.on_backup)
+        self.btn_frame = tk.Frame(self.frame, bg=bg)
+        self.btn_frame.pack(padx=10, pady=(0, 6))
+        tab_button(self.btn_frame, self.services, "💾 Save current", self.on_save, accent=True)
+        tab_button(self.btn_frame, self.services, "▶ Use selected", self.on_use)
+        tab_button(self.btn_frame, self.services, "🗑 Delete", self.on_delete)
+        tab_button(self.btn_frame, self.services, "⟳ Refresh", self.on_refresh)
+        self.run_button = tab_button(self.btn_frame, self.services, "RUN", self.on_run)
+        self.backup_button = tab_button(self.btn_frame, self.services, "📦 Full backup", self.on_backup)
+        self.run_button.pack_forget()
+
+    def update_run_button_visibility(self, running: bool):
+        if running:
+            if self.run_button_visible:
+                self.run_button.pack_forget()
+                self.run_button_visible = False
+            return
+
+        if not self.run_button_visible:
+            self.run_button.pack(side="left", padx=4, before=self.backup_button)
+            self.run_button_visible = True
 
     def selected_exts(self, show_warning=True):
         exts = [name for name in IDE_EXTENSION_ORDER if self.ide_ext_vars[name].get()]
@@ -262,6 +276,15 @@ class IdeAccountsTab:
                 widget.config(text=f"  {short}: {shorten_account_id(info.get('accountId'))}", fg="#a6e3a1")
             else:
                 widget.config(text=f"  {short}: -", fg="#6c7086")
+
+    def refresh_runtime_state(self):
+        current_ide = self.ide_var.get()
+        ide_cfg = self.services.db.IDE_PATHS[current_ide]
+        running = self.services.db.is_ide_running(current_ide)
+        state_str = "running !" if running else "closed OK"
+        state_color = "#c0392b" if running else "#2d8a4e"
+        self.ide_state_label.config(text=f"{ide_cfg['label']}: {state_str}", fg=state_color)
+        self.update_run_button_visibility(running)
 
     def refresh(self):
         db = self.services.db
@@ -322,11 +345,7 @@ class IdeAccountsTab:
                 values=(name, ext_tag, accounts_short, saved_at, expires, active),
             )
 
-        ide_cfg = db.IDE_PATHS[current_ide]
-        running = db.is_ide_running(current_ide)
-        state_str = "running !" if running else "closed OK"
-        state_color = "#c0392b" if running else "#2d8a4e"
-        self.ide_state_label.config(text=f"{ide_cfg['label']}: {state_str}", fg=state_color)
+        self.refresh_runtime_state()
 
     def on_ide_change(self):
         self.services.db.set_ide(self.ide_var.get())
@@ -382,6 +401,17 @@ class IdeAccountsTab:
 
     def on_backup(self):
         self.services.run_guarded(self.services.db.backup)
+
+    def on_run(self):
+        try:
+            message = self.services.db.launch_ide(self.ide_var.get())
+        except Exception as exc:
+            messagebox.showerror("Run IDE", str(exc))
+            self.services.set_status(str(exc), False)
+            return
+
+        self.services.set_status(message, True)
+        self.refresh()
 
     def on_refresh(self):
         self.services.refresh_all()
