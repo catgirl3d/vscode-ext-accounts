@@ -16,6 +16,7 @@ from pathlib import Path
 from tkinter import ttk
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import Mock
 from unittest.mock import patch
 
 
@@ -25,6 +26,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from vscode_inject import parse_vscdb as db
+from vscode_inject.gui_app import POLL_INTERVAL_MS, poll_ide_runtime_state
 from vscode_inject.gui_tabs import GuiServices, IdeAccountsTab
 
 
@@ -1093,6 +1095,57 @@ class IdeAccountsTabTests(unittest.TestCase):
 
         self.assertEqual(tab.run_button.winfo_manager(), "pack")
         self.assertTrue(tab.run_button_visible)
+
+    def test_refresh_runtime_state_skips_ui_when_status_unchanged(self):
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, self.make_services(self.make_db(running=False)))
+
+        with patch.object(tab.ide_state_label, "config") as label_config, patch.object(tab, "update_run_button_visibility") as update_visibility:
+            first = tab.refresh_runtime_state()
+            second = tab.refresh_runtime_state()
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(label_config.call_count, 1)
+        self.assertEqual(update_visibility.call_count, 1)
+
+    def test_refresh_runtime_state_updates_when_selected_ide_changes(self):
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, self.make_services(self.make_db(running=False)))
+
+        tab.refresh_runtime_state()
+        tab.ide_var.set("antigravity")
+
+        with patch.object(tab.ide_state_label, "config") as label_config, patch.object(tab, "update_run_button_visibility") as update_visibility:
+            changed = tab.refresh_runtime_state()
+
+        self.assertTrue(changed)
+        self.assertEqual(label_config.call_count, 1)
+        self.assertEqual(update_visibility.call_count, 1)
+
+
+class GuiAppPollingTests(unittest.TestCase):
+    def test_poll_ide_runtime_state_runs_only_for_active_ide_tab(self):
+        root = Mock()
+        notebook = Mock()
+        ide_tab = SimpleNamespace(frame=".ide", refresh_runtime_state=Mock())
+        notebook.select.return_value = ".ide"
+
+        poll_ide_runtime_state(root, notebook, ide_tab)
+
+        ide_tab.refresh_runtime_state.assert_called_once_with()
+        root.after.assert_called_once_with(POLL_INTERVAL_MS, poll_ide_runtime_state, root, notebook, ide_tab, POLL_INTERVAL_MS)
+
+    def test_poll_ide_runtime_state_skips_inactive_tab(self):
+        root = Mock()
+        notebook = Mock()
+        ide_tab = SimpleNamespace(frame=".ide", refresh_runtime_state=Mock())
+        notebook.select.return_value = ".codex"
+
+        poll_ide_runtime_state(root, notebook, ide_tab)
+
+        ide_tab.refresh_runtime_state.assert_not_called()
+        root.after.assert_called_once_with(POLL_INTERVAL_MS, poll_ide_runtime_state, root, notebook, ide_tab, POLL_INTERVAL_MS)
 
 
 if __name__ == "__main__":

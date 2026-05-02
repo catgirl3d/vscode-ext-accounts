@@ -13,12 +13,22 @@ from .gui_tabs import CodexTab, GuiServices, IdeAccountsTab
 
 
 WINDOW_WIDTH = 980
+POLL_INTERVAL_MS = 2000
 BG = "#1e1e2e"
 FG = "#cdd6f4"
 BTN_BG = "#313244"
 BTN_ACT = "#45475a"
 SEL_BG = "#89b4fa"
 SEL_FG = "#1e1e2e"
+
+
+def poll_ide_runtime_state(root, notebook, ide_tab, interval_ms=POLL_INTERVAL_MS):
+    try:
+        if notebook.select() == str(ide_tab.frame):
+            ide_tab.refresh_runtime_state()
+    except Exception:
+        pass
+    root.after(interval_ms, poll_ide_runtime_state, root, notebook, ide_tab, interval_ms)
 
 
 def main():
@@ -110,13 +120,6 @@ def main():
             refresh_all()
         root.after(100, process_ui_queue)
 
-    def poll_ide_runtime_state():
-        try:
-            ide_tab.refresh_runtime_state()
-        except Exception:
-            pass
-        root.after(1000, poll_ide_runtime_state)
-
     services.refresh_all = refresh_all
 
     status_label = tk.Label(root, textvariable=status_var, bg=BG, fg="#2d8a4e", font=("Segoe UI", 9), anchor="w")
@@ -124,7 +127,7 @@ def main():
 
     refresh_all()
     process_ui_queue()
-    poll_ide_runtime_state()
+    poll_ide_runtime_state(root, notebook, ide_tab)
     root.update_idletasks()
     root.geometry(f"{max(root.winfo_reqwidth(), WINDOW_WIDTH)}x{root.winfo_reqheight()}")
     root.mainloop()

@@ -127,6 +127,7 @@ class IdeAccountsTab:
         }
         self.current_ide_labels: dict[str, tk.Label] = {}
         self.run_button_visible = False
+        self._last_runtime_state: tuple[str, bool] | None = None
 
         self._build()
 
@@ -277,14 +278,20 @@ class IdeAccountsTab:
             else:
                 widget.config(text=f"  {short}: -", fg="#6c7086")
 
-    def refresh_runtime_state(self):
+    def refresh_runtime_state(self, force: bool = False) -> bool:
         current_ide = self.ide_var.get()
-        ide_cfg = self.services.db.IDE_PATHS[current_ide]
         running = self.services.db.is_ide_running(current_ide)
+        runtime_state = (current_ide, running)
+        if not force and runtime_state == self._last_runtime_state:
+            return False
+
+        ide_cfg = self.services.db.IDE_PATHS[current_ide]
         state_str = "running !" if running else "closed OK"
         state_color = "#c0392b" if running else "#2d8a4e"
         self.ide_state_label.config(text=f"{ide_cfg['label']}: {state_str}", fg=state_color)
         self.update_run_button_visibility(running)
+        self._last_runtime_state = runtime_state
+        return True
 
     def refresh(self):
         db = self.services.db
@@ -345,7 +352,7 @@ class IdeAccountsTab:
                 values=(name, ext_tag, accounts_short, saved_at, expires, active),
             )
 
-        self.refresh_runtime_state()
+        self.refresh_runtime_state(force=True)
 
     def on_ide_change(self):
         self.services.db.set_ide(self.ide_var.get())
