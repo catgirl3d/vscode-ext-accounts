@@ -250,12 +250,26 @@ class IdeAccountsTab:
     def format_ext_selection(self, exts):
         return "+".join(exts)
 
-    def target_ides_for_exts(self, exts):
+    def db_target_ides_for_exts(self, exts):
+        return [self.ide_var.get()] if any(ext in ("kilocode", "roo-cline") for ext in exts) else []
+
+    def kilo_new_target_ides_for_exts(self, exts):
+        return list(self.services.db.IDE_PATHS) if "kilo-new" in exts else []
+
+    def can_hot_swap_kilo_new(self, exts, db_target_ides, running_kilo_new_ides):
+        return "kilo-new" in exts and bool(running_kilo_new_ides) and not any(
+            ide in db_target_ides for ide in running_kilo_new_ides
+        )
+
+    def required_closed_ides_for_exts(self, exts, *, allow_kilo_new_while_running=False):
         targets = []
-        if any(ext in ("kilocode", "roo-cline") for ext in exts):
-            targets.append(self.ide_var.get())
-        if "kilo-new" in exts and "antigravity" not in targets:
-            targets.append("antigravity")
+        for ide in self.db_target_ides_for_exts(exts):
+            if ide not in targets:
+                targets.append(ide)
+        if not allow_kilo_new_while_running:
+            for ide in self.kilo_new_target_ides_for_exts(exts):
+                if ide not in targets:
+                    targets.append(ide)
         return targets
 
     def format_ide_labels(self, ides):
@@ -383,7 +397,27 @@ class IdeAccountsTab:
             messagebox.showerror(f"{running_labels} running", f"Close {running_labels} before switching accounts.")
             return
 
+        allow_kilo_new_while_running = False
+        kilo_new_target_ides = self.kilo_new_target_ides_for_exts(exts)
+        running_kilo_new_ides = [ide for ide in kilo_new_target_ides if self.services.db.is_ide_running(ide)]
+        if running_kilo_new_ides:
+            if not self.can_hot_swap_kilo_new(exts, db_target_ides, running_kilo_new_ides):
+                running_labels = self.format_ide_labels(running_kilo_new_ides)
+                messagebox.showerror(f"{running_labels} running", f"Close {running_labels} before switching accounts.")
+                return
+
+            running_labels = self.format_ide_labels(running_kilo_new_ides)
+            prompt = (
+                f"{running_labels} may be using shared Kilo New auth.\n"
+                "Experimental mode will rewrite the shared Kilo New auth.json without closing the IDE.\n"
+                "Use this only for testing. Continue?"
+            )
+            if not messagebox.askyesno("Experimental Kilo New write", prompt):
+                return
+            allow_kilo_new_while_running = True
+
         label = self.format_ext_selection(exts)
+        target_ides = self.required_closed_ides_for_exts(exts, allow_kilo_new_while_running=allow_kilo_new_while_running)
         hold_labels = self.format_ide_labels(target_ides)
         prompt = f"Switch '{name}' [{label}]?"
         if hold_labels:
@@ -391,7 +425,13 @@ class IdeAccountsTab:
         if not messagebox.askyesno("Switch IDE account", prompt):
             return
 
-        self.services.run_guarded(self.services.db.use_ide_account, name, exts, success_msg=f"Switched '{name}' [{label}]")
+        self.services.run_guarded(
+            self.services.db.use_ide_account,
+            name,
+            exts,
+            allow_kilo_new_while_running,
+            success_msg=f"Switched '{name}' [{label}]",
+        )
 
     def on_delete(self):
         name = selected_name(self.tree, "Select an IDE account first.")

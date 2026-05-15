@@ -830,7 +830,7 @@ class ParseVscdbTests(unittest.TestCase):
             ],
         )
 
-    def test_use_ide_account_rejects_kilo_new_when_antigravity_is_running(self):
+    def test_use_ide_account_rejects_kilo_new_when_any_supported_ide_is_running(self):
         account_data = {
             "entries": [
                 {
@@ -844,12 +844,78 @@ class ParseVscdbTests(unittest.TestCase):
             "_load_saved_account_data",
             lambda name, expected_kind=None: ("account.json", account_data, "ide"),
         )
-        self.patch_db("is_ide_running", lambda ide=None: ide == "antigravity")
+        self.patch_db(
+            "IDE_PATHS",
+            {
+                "vscode": {"label": "VSCode"},
+                "antigravity": {"label": "Antigravity"},
+            },
+        )
+        self.patch_db("is_ide_running", lambda ide=None: ide == "vscode")
 
         code, output = self.capture_exit(db.use_ide_account, "alice", "kilo-new")
 
         self.assertEqual(code, 1)
-        self.assertIn("ERROR: Antigravity is running.", output)
+        self.assertIn("Kilo New may be active in running IDEs", output)
+        self.assertIn("VSCode", output)
+
+    def test_use_ide_account_allows_kilo_new_when_running_with_experimental_flag(self):
+        source_value = {
+            "accountId": "acct-kilo-new",
+            "refresh_token": "refresh-kilo-new",
+            "expires": 666,
+        }
+        account_data = {
+            "entries": [
+                {
+                    "key": db._entry_key_for_ext(db.IDE_EXTENSIONS["kilocode"]),
+                    "value": source_value,
+                }
+            ]
+        }
+
+        written_auth: list[dict] = []
+        backup_calls: list[dict[str, object]] = []
+
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: ("account.json", account_data, "ide"),
+        )
+        self.patch_db("create_prewrite_backup", lambda **kwargs: backup_calls.append(kwargs))
+        self.patch_db(
+            "IDE_PATHS",
+            {
+                "vscode": {"label": "VSCode"},
+                "antigravity": {"label": "Antigravity"},
+            },
+        )
+        self.patch_db("is_ide_running", lambda ide=None: ide == "vscode")
+        self.patch_db("_read_kilo_auth", lambda: {"existing": {"keep": True}})
+        self.patch_db("_write_kilo_auth", lambda data: written_auth.append(data))
+
+        output = self.capture_output(db.use_ide_account, "alice", "kilo-new", True)
+
+        self.assertIn("experimental", output)
+        self.assertIn("VSCode", output)
+        self.assertEqual(
+            backup_calls,
+            [{"include_db": False, "include_kilo": True, "note": "before applying IDE account 'alice'"}],
+        )
+        self.assertEqual(
+            written_auth,
+            [
+                {
+                    "existing": {"keep": True},
+                    "openai": {
+                        "type": "oauth",
+                        "access": "",
+                        "refresh": "refresh-kilo-new",
+                        "expires": 666,
+                        "accountId": "acct-kilo-new",
+                    },
+                }
+            ],
+        )
 
     def test_use_ide_account_writes_kilo_new_auth_from_generic_source(self):
         source_value = {
@@ -1029,13 +1095,17 @@ class IdeAccountsTabTests(unittest.TestCase):
         self.root.withdraw()
         self.addCleanup(self.root.destroy)
 
-    def make_db(self, *, running: bool):
-        running_state = {"vscode": running, "antigravity": False}
+    def make_db(self, *, running: bool, antigravity_running: bool = False, vscode_running: bool | None = None):
+        running_state = {
+            "vscode": running if vscode_running is None else vscode_running,
+            "antigravity": antigravity_running,
+        }
         ide_extensions = {
             "kilocode": "kilocode.kilo-code",
             "roo-cline": "rooveterinaryinc.roo-cline",
             "kilo-new": "kilo-new://openai",
         }
+        use_ide_account = Mock(name="use_ide_account")
 
         return SimpleNamespace(
             IDE_EXTENSIONS=ide_extensions,
@@ -1053,6 +1123,7 @@ class IdeAccountsTabTests(unittest.TestCase):
             account_fingerprint=lambda value: None,
             is_ide_running=lambda ide=None: running_state[ide or "vscode"],
             set_ide=lambda name: None,
+            use_ide_account=use_ide_account,
             launch_ide=lambda ide=None: f"Started {ide or 'vscode'}",
         )
 
@@ -1122,6 +1193,61 @@ class IdeAccountsTabTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(label_config.call_count, 1)
         self.assertEqual(update_visibility.call_count, 1)
+
+    def test_on_use_allows_experimental_kilo_new_live_write_for_vscode_too(self):
+        db_module = self.make_db(running=False, vscode_running=True)
+        services = self.make_services(db_module)
+        services.run_guarded = Mock()
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, services)
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch.object(tab, "selected_exts", return_value=["kilo-new"]), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", side_effect=[True, True]
+        ) as askyesno, patch("vscode_inject.gui_tabs.messagebox.showerror") as showerror:
+            tab.on_use()
+
+        showerror.assert_not_called()
+        self.assertEqual(askyesno.call_count, 2)
+        services.run_guarded.assert_called_once_with(
+            db_module.use_ide_account,
+            "alice",
+            ["kilo-new"],
+            True,
+            success_msg="Switched 'alice' [kilo-new]",
+        )
+
+    def test_on_use_requires_both_ides_closed_for_kilo_new_without_experimental_mode(self):
+        db_module = self.make_db(running=False, antigravity_running=True)
+        services = self.make_services(db_module)
+        services.run_guarded = Mock()
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, services)
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch.object(tab, "selected_exts", return_value=["kilo-new"]), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=False
+        ) as askyesno, patch("vscode_inject.gui_tabs.messagebox.showerror") as showerror:
+            tab.on_use()
+
+        showerror.assert_not_called()
+        askyesno.assert_called_once()
+        services.run_guarded.assert_not_called()
+
+    def test_on_use_still_blocks_running_antigravity_when_db_write_is_needed(self):
+        db_module = self.make_db(running=False, antigravity_running=True)
+        services = self.make_services(db_module)
+        services.run_guarded = Mock()
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, services)
+        tab.ide_var.set("antigravity")
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch.object(tab, "selected_exts", return_value=["kilocode", "kilo-new"]), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno"
+        ) as askyesno, patch("vscode_inject.gui_tabs.messagebox.showerror") as showerror:
+            tab.on_use()
+
+        askyesno.assert_not_called()
+        showerror.assert_called_once()
+        services.run_guarded.assert_not_called()
 
 
 class GuiAppPollingTests(unittest.TestCase):

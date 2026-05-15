@@ -959,7 +959,11 @@ def save_codex_account(name: str):
     _print_saved_entries([entry])
 
 
-def use_ide_account(name: str, ext: str | list[str] | tuple[str, ...] | None = None):
+def use_ide_account(
+    name: str,
+    ext: str | list[str] | tuple[str, ...] | None = None,
+    allow_kilo_new_while_running: bool = False,
+):
     """Apply a saved IDE-family account to DB slots and/or Kilo New."""
     _path, account_data, account_kind = _load_saved_account_data(name)
     if account_kind == "codex":
@@ -986,9 +990,14 @@ def use_ide_account(name: str, ext: str | list[str] | tuple[str, ...] | None = N
     if needs_db_write:
         guard_vscode_closed()
 
-    if needs_kilo_write and is_ide_running("antigravity"):
-        print("ERROR: Antigravity is running. Close it before switching accounts.")
+    running_kilo_new_ides = [ide for ide in IDE_PATHS if needs_kilo_write and is_ide_running(ide)]
+    if running_kilo_new_ides and not allow_kilo_new_while_running:
+        labels = ", ".join(IDE_PATHS[ide]["label"] for ide in running_kilo_new_ides)
+        print(f"ERROR: Kilo New may be active in running IDEs: {labels}. Close them before switching accounts.")
         sys.exit(1)
+    if running_kilo_new_ides and allow_kilo_new_while_running:
+        labels = ", ".join(IDE_PATHS[ide]["label"] for ide in running_kilo_new_ides)
+        print(f"WARNING: Writing shared Kilo New auth while IDEs are running ({labels}) (experimental).")
 
     if needs_db_write or needs_kilo_write:
         create_prewrite_backup(
