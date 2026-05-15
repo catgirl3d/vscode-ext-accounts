@@ -47,6 +47,19 @@ Codex не вважається IDE-extension-слотом. Для нього є
 
 Сценарій `IDE -> Codex` навмисно не підтримується, тому що Codex потребує `id_token`.
 
+## Оновлення токенів
+
+Збережені профілі в `accounts/*.json` тепер можна оновлювати окремо від live-сховищ IDE/Codex.
+
+- **Refresh selected** оновлює тільки збережений snapshot у `accounts/*.json`.
+- Кнопка **не** переписує `state.vscdb`, `~/.local/share/kilo/auth.json` або `~/.codex/auth.json`, доки ви явно не застосуєте профіль через **Use selected** / **Use selected Codex**.
+- **Auto-refresh** працює лише поки відкрите вікно застосунку.
+- Auto-refresh відстежує тільки токени, які ще валідні, але скоро втратять чинність (дефолтний поріг: `10 хвилин`).
+- Профілі, які вже прострочені, показуються як `expired` червоним кольором і пропускаються auto-refresh'ем.
+- Для простроченого snapshot усе ще можна вручну натиснути **Refresh selected**, але старі refresh token часто падають з `401` / `invalid_grant`.
+- Якщо upstream повертає terminal auth error (`invalid_grant`, `already been used`, `revoked`, `sign in again` тощо), auto-refresh вимикається для цієї refresh-token-group до перезапуску застосунку.
+- Консольні логи мають префікси `[manual-refresh]` і `[auto-refresh]`.
+
 ## Вимоги
 
 ```bash
@@ -73,11 +86,13 @@ python main.py
 Вкладка **IDE Accounts** надає:
 - **Save current** — зберегти поточний стан акаунтів для вибраних IDE/Kilo New слотів
 - **Use selected** — застосувати збережений IDE-акаунт до відмічених цілей
+- **Refresh selected** — оновити збережений IDE-snapshot у `accounts/*.json`
 - **Delete** — видалити збережений IDE-акаунт
 - **Refresh** — оновити поточний стан і список збережених акаунтів
 - **Full backup** — створити справжній ZIP-знімок сховищ застосунку (`state.vscdb`, `Local State`, Kilo New auth, Codex auth)
 
 Колонка **Active** показує де акаунт зараз активний: `VS` (VSCode), `AG` (Antigravity), `KN` (Kilo New).
+Колонка **Expires** показує `expired` червоним кольором, якщо збережений snapshot уже прострочений.
 
 Вкладка **Codex** винесена окремо, тому що Codex зберігає токени в `~/.codex/auth.json` і потребує `id_token`.
 
@@ -85,6 +100,7 @@ python main.py
 - **Save current Codex** — зберегти поточний `~/.codex/auth.json`
 - **Import Codex auth** — імпортувати інший Codex auth-файл у список збережених акаунтів
 - **Use selected Codex** — записати збережений Codex-акаунт у `~/.codex/auth.json`
+- **Refresh selected** — оновити збережений Codex-snapshot у `accounts/*.json`
 - **Delete** — видалити збережений Codex-акаунт
 - **Refresh** — оновити поточний Codex-стан і список збережених акаунтів
 
@@ -96,6 +112,8 @@ python main.py
 - Збережені акаунти лежать у локальній директорії `accounts/`.
 - Перед записом у IDE/Kilo New/Codex застосунок автоматично створює ZIP-бекап файлів, які будуть змінені.
 - `Full backup` показує warning лише коли відсутні required-файли поточної IDE, інші відсутні сховища рахує як skipped/optional, і падає, якщо не існує жодного target-файлу.
+- Auto-refresh не чіпає saved snapshots, які вже прострочені.
+- Manual refresh оновлює тільки збережений профіль, доки ви не застосуєте його назад через **Use selected** / **Use selected Codex**.
 
 `Kilo New` завжди читається і записується через `~/.local/share/kilo/auth.json`, і цей файл використовується Kilo New як у VSCode, так і в Antigravity.
 
