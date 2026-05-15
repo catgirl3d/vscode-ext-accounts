@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import queue
 import sqlite3
 import sys
 import tempfile
@@ -26,8 +27,17 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from vscode_inject import parse_vscdb as db
-from vscode_inject.gui_app import POLL_INTERVAL_MS, execute_guarded_call, poll_ide_runtime_state
-from vscode_inject.gui_tabs import CodexTab, GuiServices, IdeAccountsTab
+from vscode_inject.gui_app import (
+    AUTO_REFRESH_START_DELAY_MS,
+    POLL_INTERVAL_MS,
+    execute_auto_refresh_tick,
+    execute_guarded_call,
+    log_auto_refresh_result,
+    poll_ide_runtime_state,
+    start_auto_refresh_worker,
+)
+from vscode_inject import refresh_scheduler
+from vscode_inject.gui_tabs import CodexTab, EXPIRED_ROW_TAG, GuiServices, IdeAccountsTab
 
 
 def create_state_db(path: Path, rows: list[tuple[str, object]]) -> None:
@@ -1137,9 +1147,9 @@ class ParseVscdbTests(unittest.TestCase):
                 refreshed_at="2026-05-15T12:34:56Z",
             ),
         ) as refresh_saved_entries, patch.object(
-            db.saved_store,
-            "write_saved_account_data",
-            side_effect=lambda path, data: write_calls.append((path, data)),
+            db,
+            "write_saved_account_batch",
+            side_effect=lambda updates: write_calls.extend(list(updates.items())),
         ):
             message = db.refresh_saved_account("alice")
 
@@ -1162,7 +1172,7 @@ class ParseVscdbTests(unittest.TestCase):
             ],
         )
 
-    def test_refresh_saved_account_persists_error_status_and_reraises(self):
+    def test_refresh_saved_account_persists_error_status_and_raises_user_facing_error(self):
         account_data = {
             "name": "alice",
             "kind": "ide",
@@ -1192,14 +1202,19 @@ class ParseVscdbTests(unittest.TestCase):
             "refresh_saved_entries",
             side_effect=db.oauth_refresh.TokenExchangeError("Token refresh failed: 400 invalid_grant"),
         ) as refresh_saved_entries, patch.object(
-            db.saved_store,
-            "write_saved_account_data",
-            side_effect=lambda path, data: write_calls.append((path, data)),
+            db.oauth_refresh,
+            "current_time_iso",
+            return_value="2026-05-15T12:00:00Z",
+        ), patch.object(
+            db,
+            "write_saved_account_batch",
+            side_effect=lambda updates: write_calls.extend(list(updates.items())),
         ):
-            with self.assertRaisesRegex(db.oauth_refresh.TokenExchangeError, "invalid_grant"):
+            with self.assertRaisesRegex(db.SavedAccountRefreshError, "Refresh failed for 'alice': .*invalid_grant") as exc_info:
                 db.refresh_saved_account("alice")
 
         refresh_saved_entries.assert_called_once_with(account_data["entries"])
+        self.assertIsInstance(exc_info.exception.__cause__, db.oauth_refresh.TokenExchangeError)
         self.assertEqual(
             write_calls,
             [
@@ -1213,10 +1228,171 @@ class ParseVscdbTests(unittest.TestCase):
                         "last_refreshed_at": "2026-05-15T11:11:11Z",
                         "refresh_status": "error",
                         "refresh_error": "Token refresh failed: 400 invalid_grant",
+                        "refresh_error_at": "2026-05-15T12:00:00Z",
                     },
                 )
             ],
         )
+
+    def test_persist_refreshed_saved_account_batch_cleans_up_recovery_snapshot_after_success(self):
+        self.patch_db("PROJECT_ROOT", str(self.root))
+        updates = {
+            "alice.json": {
+                "entries": [
+                    {
+                        "key": db.KILO_NEW_KEY,
+                        "value": {"refresh_token": "refresh-2", "access_token": "new-access"},
+                    }
+                ]
+            }
+        }
+        write_calls: list[tuple[str, dict]] = []
+
+        self.patch_db(
+            "write_saved_account_batch",
+            lambda payload: write_calls.extend(list(payload.items())),
+        )
+
+        db.persist_refreshed_saved_account_batch(
+            updates,
+            subject_label="saved account 'alice'",
+            account_names=("alice",),
+            providers=(db.oauth_refresh.OPENAI_CODEX_PROVIDER,),
+            operation="manual-refresh",
+        )
+
+        recovery_dir = self.root / "backups" / "refresh_recovery"
+        self.assertEqual(write_calls, [("alice.json", updates["alice.json"])])
+        self.assertTrue(recovery_dir.exists())
+        self.assertEqual(list(recovery_dir.glob("*.json")), [])
+
+    def test_persist_refreshed_saved_account_batch_keeps_recovery_snapshot_when_primary_write_fails(self):
+        self.patch_db("PROJECT_ROOT", str(self.root))
+        updates = {
+            "alice.json": {
+                "entries": [
+                    {
+                        "key": db.KILO_NEW_KEY,
+                        "value": {"refresh_token": "refresh-2", "access_token": "new-access"},
+                    }
+                ]
+            }
+        }
+
+        self.patch_db(
+            "write_saved_account_batch",
+            lambda payload: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        with self.assertRaisesRegex(db.RefreshedCredentialsPersistenceError, "recovery snapshot was saved to") as exc_info:
+            db.persist_refreshed_saved_account_batch(
+                updates,
+                subject_label="saved account 'alice'",
+                account_names=("alice",),
+                providers=(db.oauth_refresh.OPENAI_CODEX_PROVIDER,),
+                operation="manual-refresh",
+            )
+
+        recovery_path = Path(exc_info.exception.recovery_path or "")
+        self.assertTrue(recovery_path.exists())
+        payload = json.loads(recovery_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["kind"], "saved-account-refresh-recovery")
+        self.assertEqual(payload["operation"], "manual-refresh")
+        self.assertEqual(payload["account_names"], ["alice"])
+        self.assertEqual(payload["providers"], [db.oauth_refresh.OPENAI_CODEX_PROVIDER])
+        self.assertEqual(payload["records"], [{"path": "alice.json", "data": updates["alice.json"]}])
+
+    def test_persist_refreshed_saved_account_batch_reports_when_recovery_snapshot_cannot_be_written(self):
+        self.patch_db("PROJECT_ROOT", str(self.root))
+        updates = {
+            "alice.json": {
+                "entries": [
+                    {
+                        "key": db.KILO_NEW_KEY,
+                        "value": {"refresh_token": "refresh-2", "access_token": "new-access"},
+                    }
+                ]
+            }
+        }
+
+        self.patch_db(
+            "write_saved_account_batch",
+            lambda payload: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        with patch.object(
+            db,
+            "_write_refresh_recovery_snapshot",
+            side_effect=OSError("backup path unavailable"),
+        ):
+            with self.assertRaisesRegex(db.RefreshedCredentialsPersistenceError, "No recovery snapshot could be written") as exc_info:
+                db.persist_refreshed_saved_account_batch(
+                    updates,
+                    subject_label="saved account 'alice'",
+                    account_names=("alice",),
+                    providers=(db.oauth_refresh.OPENAI_CODEX_PROVIDER,),
+                    operation="manual-refresh",
+                )
+
+        self.assertIsNone(exc_info.exception.recovery_path)
+        self.assertIsInstance(exc_info.exception.recovery_error, OSError)
+        self.assertIn("backup path unavailable", str(exc_info.exception))
+
+    def test_refresh_saved_account_returns_recovery_message_when_primary_save_fails_after_refresh(self):
+        self.patch_db("PROJECT_ROOT", str(self.root))
+        account_data = {
+            "name": "alice",
+            "kind": "ide",
+            "saved_at": "2026-05-15T10:00:00",
+            "entries": [
+                {
+                    "key": db.KILO_NEW_KEY,
+                    "value": {
+                        "access_token": "old-access",
+                        "refresh_token": "refresh-1",
+                        "expires": 111,
+                        "accountId": "acct-1",
+                    },
+                }
+            ],
+        }
+        refreshed_entries = [
+            {
+                "key": db.KILO_NEW_KEY,
+                "value": {
+                    "access_token": "new-access",
+                    "refresh_token": "refresh-2",
+                    "expires": 222,
+                    "accountId": "acct-1",
+                },
+            }
+        ]
+
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: ("alice.json", account_data, "ide"),
+        )
+        self.patch_db(
+            "write_saved_account_batch",
+            lambda payload: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        with patch.object(
+            db.oauth_refresh,
+            "refresh_saved_entries",
+            return_value=db.oauth_refresh.RefreshEntriesResult(
+                entries=refreshed_entries,
+                refreshed_entries=1,
+                refreshed_groups=1,
+                refreshed_at="2026-05-15T12:34:56Z",
+            ),
+        ):
+            with self.assertRaisesRegex(db.SavedAccountRefreshError, "recovery snapshot was saved to") as exc_info:
+                db.refresh_saved_account("alice")
+
+        message = str(exc_info.exception)
+        self.assertIn("Refreshed saved account 'alice', but failed to persist the new credentials locally: disk full.", message)
+        self.assertIn("manual sign-in may be required", message)
 
 
 class IdeAccountsTabTests(unittest.TestCase):
@@ -1394,7 +1570,36 @@ class IdeAccountsTabTests(unittest.TestCase):
         with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
             tab.on_refresh_selected()
 
-        services.run_guarded.assert_called_once_with(db_module.refresh_saved_account, "alice")
+        services.run_guarded.assert_called_once_with(db_module.refresh_saved_account, "alice", log_prefix="manual-refresh")
+
+    def test_refresh_marks_expired_ide_rows_red_and_labels_them_expired(self):
+        db_module = self.make_db(running=False)
+        db_module.list_saved_accounts = lambda kind: [
+            {
+                "name": "expired_ide",
+                "data": {
+                    "ext": "kilocode",
+                    "saved_at": "2026-05-15T10:00:00",
+                    "entries": [
+                        {
+                            "key": db_module.IDE_EXTENSIONS["kilocode"],
+                            "value": {
+                                "accountId": "acct-1",
+                                "expires": 1_000,
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, self.make_services(db_module))
+
+        with patch("vscode_inject.gui_tabs.current_time_ms", return_value=2_000):
+            tab.refresh()
+
+        self.assertEqual(tab.tree.item("expired_ide", "tags"), (EXPIRED_ROW_TAG,))
+        self.assertEqual(tab.tree.item("expired_ide", "values")[4], "expired")
 
 
 class CodexTabTests(unittest.TestCase):
@@ -1435,7 +1640,42 @@ class CodexTabTests(unittest.TestCase):
         with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
             tab.on_refresh_selected()
 
-        services.run_guarded.assert_called_once_with(db_module.refresh_saved_account, "alice")
+        services.run_guarded.assert_called_once_with(db_module.refresh_saved_account, "alice", log_prefix="manual-refresh")
+
+    def test_refresh_marks_expired_codex_rows_red_and_labels_them_expired(self):
+        db_module = SimpleNamespace(
+            CODEX_AUTH_PATH="C:/Users/Test/.codex/auth.json",
+            CODEX_KEY="codex://openai",
+            read_current_codex_account=lambda: {},
+            list_saved_accounts=lambda kind: [
+                {
+                    "name": "expired_codex",
+                    "data": {
+                        "saved_at": "2026-05-15T10:00:00",
+                        "entries": [
+                            {
+                                "key": "codex://openai",
+                                "value": {
+                                    "accountId": "acct-codex",
+                                    "expires": 1_000,
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            account_fingerprint=lambda value: None,
+            refresh_saved_account=Mock(name="refresh_saved_account"),
+        )
+        services = self.make_services(db_module)
+        notebook = ttk.Notebook(self.root)
+        tab = CodexTab(notebook, services)
+
+        with patch("vscode_inject.gui_tabs.current_time_ms", return_value=2_000):
+            tab.refresh()
+
+        self.assertEqual(tab.tree.item("expired_codex", "tags"), (EXPIRED_ROW_TAG,))
+        self.assertEqual(tab.tree.item("expired_codex", "values")[3], "expired")
 
 
 class GuiAppPollingTests(unittest.TestCase):
@@ -1455,6 +1695,110 @@ class GuiAppPollingTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(message, "Unexpected failure")
         print_exc.assert_called_once_with()
+
+    def test_execute_guarded_call_logs_manual_refresh_success_with_prefix(self):
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            message, ok = execute_guarded_call(lambda: "Refreshed 'alice' (1 token group, 1 entry)", log_prefix="manual-refresh")
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Refreshed 'alice' (1 token group, 1 entry)")
+        self.assertIn("[manual-refresh] INFO: Refreshed 'alice' (1 token group, 1 entry)", output.getvalue())
+
+    def test_execute_guarded_call_logs_manual_refresh_error_with_prefix_without_traceback(self):
+        output = io.StringIO()
+
+        with redirect_stdout(output), patch("vscode_inject.gui_app.traceback.print_exc") as print_exc:
+            message, ok = execute_guarded_call(
+                lambda: (_ for _ in ()).throw(db.SavedAccountRefreshError("Refresh failed for 'alice': invalid_grant")),
+                log_prefix="manual-refresh",
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual(message, "Refresh failed for 'alice': invalid_grant")
+        self.assertIn("[manual-refresh] ERROR: Refresh failed for 'alice': invalid_grant", output.getvalue())
+        print_exc.assert_not_called()
+
+    def test_execute_auto_refresh_tick_returns_failed_result_on_unexpected_exception(self):
+        scheduler = Mock()
+        scheduler.policy = refresh_scheduler.RefreshPolicy(scan_interval_ms=AUTO_REFRESH_START_DELAY_MS * 10)
+        scheduler.run_once.side_effect = RuntimeError("scheduler failure")
+
+        with patch("vscode_inject.gui_app.traceback.print_exc") as print_exc:
+            result = execute_auto_refresh_tick(scheduler)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.message, "scheduler failure")
+        self.assertEqual(result.next_delay_ms, AUTO_REFRESH_START_DELAY_MS * 10)
+        print_exc.assert_called_once_with()
+
+    def test_start_auto_refresh_worker_skips_when_worker_is_already_running(self):
+        scheduler = Mock()
+        result_queue: queue.Queue = queue.Queue()
+        worker_state = {"running": True}
+
+        started = start_auto_refresh_worker(result_queue, scheduler, worker_state)
+
+        self.assertFalse(started)
+        self.assertTrue(result_queue.empty())
+
+    def test_start_auto_refresh_worker_enqueues_scheduler_result(self):
+        expected = refresh_scheduler.AutoRefreshResult(next_delay_ms=1234, message="auto", ok=True)
+        scheduler = Mock()
+        scheduler.run_once.return_value = expected
+        result_queue: queue.Queue = queue.Queue()
+        worker_state = {"running": False}
+
+        class InlineThread:
+            def __init__(self, target=None, daemon=None):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                if self.target:
+                    self.target()
+
+        with patch("vscode_inject.gui_app.threading.Thread", InlineThread):
+            started = start_auto_refresh_worker(result_queue, scheduler, worker_state)
+
+        self.assertTrue(started)
+        self.assertTrue(worker_state["running"])
+        self.assertEqual(result_queue.get_nowait(), expected)
+
+    def test_log_auto_refresh_result_prints_prefixed_message(self):
+        output = io.StringIO()
+        failure = refresh_scheduler.RefreshFailure(
+            group=db.oauth_refresh.RefreshGroup(
+                key=db.oauth_refresh.RefreshGroupKey(provider="openai-codex", refresh_token="refresh-1"),
+                bundle=db.oauth_refresh.TokenBundle(access_token="", refresh_token="refresh-1", expires=0),
+                expires=0,
+                entries=(
+                    db.oauth_refresh.RefreshableRecordEntry(
+                        record_name="codex3",
+                        record_path="codex3.json",
+                        entry_index=0,
+                        group_key=db.oauth_refresh.RefreshGroupKey(provider="openai-codex", refresh_token="refresh-1"),
+                        bundle=db.oauth_refresh.TokenBundle(access_token="", refresh_token="refresh-1", expires=0),
+                    ),
+                ),
+            ),
+            error_message="terminal token error",
+            terminal=True,
+        )
+        result = refresh_scheduler.AutoRefreshResult(
+            next_delay_ms=1000,
+            ok=False,
+            message="terminal token error",
+            failures=(failure,),
+        )
+
+        with redirect_stdout(output):
+            log_auto_refresh_result(result)
+
+        log_output = output.getvalue()
+        self.assertIn("[auto-refresh] ERROR: terminal token error", log_output)
+        self.assertIn("[auto-refresh] ERROR DETAIL: accounts=[codex3] provider=openai-codex status=terminal: terminal token error", log_output)
 
     def test_poll_ide_runtime_state_runs_only_for_active_ide_tab(self):
         root = Mock()

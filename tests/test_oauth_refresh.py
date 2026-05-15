@@ -231,6 +231,25 @@ class OAuthRefreshTests(unittest.TestCase):
             ),
         )
 
+    def test_is_terminal_refresh_error_detects_terminal_token_exchange_failures(self):
+        exc = refresh.TokenExchangeError(
+            "Token refresh failed: 401 invalid_request_error: Your refresh token has already been used to generate a new access token.",
+            status_code=401,
+            error_code="invalid_request_error",
+            error_description="Your refresh token has already been used to generate a new access token.",
+        )
+
+        self.assertTrue(refresh.is_terminal_refresh_error(exc))
+
+    def test_is_terminal_refresh_error_keeps_transient_errors_retryable(self):
+        exc = refresh.TokenExchangeError(
+            "Token refresh failed: 503 upstream timeout",
+            status_code=503,
+            error_description="upstream timeout",
+        )
+
+        self.assertFalse(refresh.is_terminal_refresh_error(exc))
+
 
 if __name__ == "__main__":
     unittest.main()

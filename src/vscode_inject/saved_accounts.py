@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import tempfile
+from typing import Mapping, Sequence
 
 
 class SavedAccountKindMismatchError(ValueError):
@@ -15,8 +16,9 @@ def ensure_accounts_dir(accounts_dir: str) -> str:
     return accounts_dir
 
 
-def write_saved_account_data(path: str, data: dict) -> None:
-    directory = os.path.dirname(path)
+def _stage_saved_account_data(path: str, data: dict) -> str:
+    normalized_path = os.path.abspath(path)
+    directory = os.path.dirname(normalized_path)
     if directory:
         os.makedirs(directory, exist_ok=True)
 
@@ -24,6 +26,29 @@ def write_saved_account_data(path: str, data: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, ensure_ascii=False)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
+    return tmp_path
+
+
+def _restore_account_file_bytes(path: str, original_bytes: bytes | None) -> None:
+    if original_bytes is None:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        return
+
+    normalized_path = os.path.abspath(path)
+    directory = os.path.dirname(normalized_path)
+    fd, tmp_path = tempfile.mkstemp(prefix=".account-rollback-", suffix=".json", dir=directory or None)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(original_bytes)
         os.replace(tmp_path, path)
     except Exception:
         try:
@@ -31,6 +56,58 @@ def write_saved_account_data(path: str, data: dict) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def write_saved_account_data(path: str, data: dict) -> None:
+    tmp_path = _stage_saved_account_data(path, data)
+    try:
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def write_saved_account_batch(updates: Mapping[str, dict] | Sequence[tuple[str, dict]]) -> None:
+    items = list(updates.items()) if isinstance(updates, Mapping) else list(updates)
+    if not items:
+        return
+
+    originals: dict[str, bytes | None] = {}
+    staged_paths: dict[str, str] = {}
+    replaced_paths: list[str] = []
+    try:
+        for path, data in items:
+            if os.path.exists(path):
+                with open(path, "rb") as fh:
+                    originals[path] = fh.read()
+            else:
+                originals[path] = None
+            staged_paths[path] = _stage_saved_account_data(path, data)
+
+        for path, _data in items:
+            os.replace(staged_paths[path], path)
+            replaced_paths.append(path)
+    except Exception:
+        rollback_errors: list[Exception] = []
+        for path in reversed(replaced_paths):
+            try:
+                _restore_account_file_bytes(path, originals.get(path))
+            except Exception as rollback_exc:
+                rollback_errors.append(rollback_exc)
+        if rollback_errors:
+            raise RuntimeError(f"Failed to write saved account batch and rollback cleanly: {rollback_errors[0]}") from rollback_errors[0]
+        raise
+    finally:
+        for path, staged_path in staged_paths.items():
+            if path in replaced_paths:
+                continue
+            try:
+                os.unlink(staged_path)
+            except FileNotFoundError:
+                pass
 
 
 def saved_account_kind(data: dict, codex_key: str) -> str:

@@ -11,6 +11,12 @@ IDE_EXTENSION_ORDER = ("kilocode", "roo-cline", "kilo-new")
 IDE_STATE_LABEL_WIDTH = 24
 CURRENT_IDE_LABEL_WIDTH = 24
 CODEX_CURRENT_LABEL_WIDTH = 16
+EXPIRED_ROW_TAG = "expired"
+EXPIRED_ROW_FG = "#f38ba8"
+
+
+def current_time_ms():
+    return int(datetime.datetime.now().timestamp() * 1000)
 
 
 @dataclass
@@ -41,6 +47,25 @@ def format_expires_ms(expires_ms):
         return ""
 
 
+def is_expired_ms(expires_ms, now_ms=None):
+    if not isinstance(expires_ms, int) or expires_ms <= 0:
+        return False
+    current_ms = now_ms if now_ms is not None else current_time_ms()
+    return expires_ms <= current_ms
+
+
+def format_saved_expires(expires_ms, now_ms=None):
+    if is_expired_ms(expires_ms, now_ms=now_ms):
+        return "expired"
+    return format_expires_ms(expires_ms)
+
+
+def expires_row_tags(expires_ms, now_ms=None):
+    if is_expired_ms(expires_ms, now_ms=now_ms):
+        return (EXPIRED_ROW_TAG,)
+    return ()
+
+
 def shorten_account_id(account_id, limit=12):
     if isinstance(account_id, str) and len(account_id) > limit:
         return account_id[:limit] + "..."
@@ -60,16 +85,22 @@ def summarize_account_ids(entries, skip_keys=None):
 
 
 def first_expires(entries, skip_keys=None):
+    expires_ms = first_expires_ms(entries, skip_keys=skip_keys)
+    return format_saved_expires(expires_ms)
+
+
+def first_expires_ms(entries, skip_keys=None):
     skip_keys = set(skip_keys or [])
+    expires_values = []
     for entry in entries:
         if entry.get("key") in skip_keys:
             continue
         value = entry.get("value", {})
         if isinstance(value, dict):
-            exp_str = format_expires_ms(value.get("expires"))
-            if exp_str:
-                return exp_str
-    return ""
+            expires_ms = value.get("expires")
+            if isinstance(expires_ms, int) and expires_ms > 0:
+                expires_values.append(expires_ms)
+    return min(expires_values, default=0)
 
 
 def selected_name(tree, empty_message):
@@ -218,6 +249,7 @@ class IdeAccountsTab:
         self.tree.column("saved", width=110, anchor="center")
         self.tree.column("expires", width=80, anchor="center")
         self.tree.column("active", width=90, anchor="center")
+        self.tree.tag_configure(EXPIRED_ROW_TAG, foreground=EXPIRED_ROW_FG)
         self.tree.pack(padx=10, pady=(0, 6))
 
         self.btn_frame = tk.Frame(self.frame, bg=bg)
@@ -335,7 +367,8 @@ class IdeAccountsTab:
 
             saved_at = format_saved_at(data)
             ext_tag = data.get("ext", "both")
-            expires = first_expires(ide_entries)
+            expires_ms = first_expires_ms(ide_entries)
+            expires = format_saved_expires(expires_ms)
             accounts_short = summarize_account_ids(ide_entries)
 
             active_tags = []
@@ -365,6 +398,7 @@ class IdeAccountsTab:
                 "end",
                 iid=name,
                 values=(name, ext_tag, accounts_short, saved_at, expires, active),
+                tags=expires_row_tags(expires_ms),
             )
 
         self.refresh_runtime_state(force=True)
@@ -451,7 +485,7 @@ class IdeAccountsTab:
         name = selected_name(self.tree, "Select an IDE account first.")
         if not name:
             return
-        self.services.run_guarded(self.services.db.refresh_saved_account, name)
+        self.services.run_guarded(self.services.db.refresh_saved_account, name, log_prefix="manual-refresh")
 
     def on_backup(self):
         self.services.run_guarded(self.services.db.backup)
@@ -514,6 +548,7 @@ class CodexTab:
         self.tree.column("saved", width=120, anchor="center")
         self.tree.column("expires", width=100, anchor="center")
         self.tree.column("active", width=90, anchor="center")
+        self.tree.tag_configure(EXPIRED_ROW_TAG, foreground=EXPIRED_ROW_FG)
         self.tree.pack(padx=10, pady=(0, 6))
 
         btn_frame = tk.Frame(self.frame, bg=bg)
@@ -553,9 +588,10 @@ class CodexTab:
             value = codex_entry.get("value", {})
             saved_at = format_saved_at(data)
             account_id = shorten_account_id(value.get("accountId"))
-            expires = format_expires_ms(value.get("expires"))
+            expires_ms = value.get("expires") if isinstance(value.get("expires"), int) else 0
+            expires = format_saved_expires(expires_ms)
             active = "active" if current_fp and db.account_fingerprint(value) == current_fp else "-"
-            self.tree.insert("", "end", iid=name, values=(name, account_id, saved_at, expires, active))
+            self.tree.insert("", "end", iid=name, values=(name, account_id, saved_at, expires, active), tags=expires_row_tags(expires_ms))
 
     def on_save(self):
         name = ask_account_name(self.services.root, "Save Codex account", "Account name:")
@@ -602,7 +638,7 @@ class CodexTab:
         name = selected_name(self.tree, "Select a Codex account first.")
         if not name:
             return
-        self.services.run_guarded(self.services.db.refresh_saved_account, name)
+        self.services.run_guarded(self.services.db.refresh_saved_account, name, log_prefix="manual-refresh")
 
     def on_refresh(self):
         self.services.refresh_all()

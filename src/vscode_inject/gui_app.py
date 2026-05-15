@@ -8,13 +8,17 @@ import threading
 import traceback
 import tkinter as tk
 from tkinter import ttk
+from typing import Any, Mapping
 
 from . import parse_vscdb as db
+from . import refresh_scheduler
 from .gui_tabs import CodexTab, GuiServices, IdeAccountsTab
 
 
 WINDOW_WIDTH = 980
 POLL_INTERVAL_MS = 2000
+AUTO_REFRESH_START_DELAY_MS = 1000
+AUTO_REFRESH_QUEUE_POLL_INTERVAL_MS = 500
 BG = "#1e1e2e"
 FG = "#cdd6f4"
 BTN_BG = "#313244"
@@ -32,7 +36,7 @@ def poll_ide_runtime_state(root, notebook, ide_tab, interval_ms=POLL_INTERVAL_MS
     root.after(interval_ms, poll_ide_runtime_state, root, notebook, ide_tab, interval_ms)
 
 
-def execute_guarded_call(fn, *args, success_msg=None):
+def execute_guarded_call(fn, *args, success_msg=None, log_prefix=None):
     """Run a backend call and normalize the status payload for the GUI."""
     ok = True
     message = success_msg
@@ -43,20 +47,73 @@ def execute_guarded_call(fn, *args, success_msg=None):
     except SystemExit as exc:
         ok = False
         message = f"Aborted (code {exc.code})"
-        print(message)
+        if not log_prefix:
+            print(message)
     except db.UserFacingError as exc:
         ok = False
         message = str(exc)
-        print(message)
+        if not log_prefix:
+            print(message)
     except Exception as exc:
         ok = False
         message = str(exc)
         traceback.print_exc()
+    if log_prefix and message:
+        level = "INFO" if ok else "ERROR"
+        print(f"[{log_prefix}] {level}: {message}")
     return message, ok
+
+
+def execute_auto_refresh_tick(scheduler: refresh_scheduler.AutoRefreshScheduler) -> refresh_scheduler.AutoRefreshResult:
+    try:
+        return scheduler.run_once()
+    except Exception as exc:
+        traceback.print_exc()
+        return refresh_scheduler.AutoRefreshResult(
+            next_delay_ms=scheduler.policy.scan_interval_ms,
+            ok=False,
+            message=str(exc),
+        )
+
+
+def start_auto_refresh_worker(
+    result_queue: queue.Queue,
+    scheduler: refresh_scheduler.AutoRefreshScheduler,
+    worker_state: dict[str, bool],
+) -> bool:
+    if worker_state.get("running"):
+        return False
+
+    worker_state["running"] = True
+
+    def _run():
+        result_queue.put(execute_auto_refresh_tick(scheduler))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
+def log_auto_refresh_result(result: refresh_scheduler.AutoRefreshResult) -> None:
+    if not result.message:
+        return
+    level = "INFO" if result.ok else "ERROR"
+    print(f"[auto-refresh] {level}: {result.message}")
+    for failure in result.failures:
+        names = ", ".join(failure.group.account_names()) or "saved account"
+        terminal_label = "terminal" if failure.terminal else "retryable"
+        print(
+            "[auto-refresh] ERROR DETAIL: "
+            f"accounts=[{names}] provider={failure.group.key.provider} status={terminal_label}: {failure.error_message}"
+        )
+
+
+def write_saved_account_mapping_batch(updates: Mapping[str, dict[str, Any]]) -> None:
+    db.write_saved_account_batch(dict(updates))
 
 
 def main():
     ui_queue = queue.Queue()
+    auto_refresh_queue: queue.Queue[refresh_scheduler.AutoRefreshResult] = queue.Queue()
     root = tk.Tk()
     root.title("Account Manager")
     root.resizable(False, False)
@@ -69,11 +126,11 @@ def main():
         status_var.set(msg)
         status_label.config(fg=color)
 
-    def run_guarded(fn, *args, success_msg=None):
+    def run_guarded(fn, *args, success_msg=None, log_prefix=None):
         """Run fn in a worker thread and refresh UI on completion."""
 
         def _run():
-            ui_queue.put(execute_guarded_call(fn, *args, success_msg=success_msg))
+            ui_queue.put(execute_guarded_call(fn, *args, success_msg=success_msg, log_prefix=log_prefix))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -103,23 +160,38 @@ def main():
     notebook.pack(fill="both", expand=True, padx=10, pady=(8, 6))
 
     services = GuiServices(
-        root=root,
-        db=db,
-        bg=BG,
-        fg=FG,
-        btn_bg=BTN_BG,
-        btn_act=BTN_ACT,
-        sel_fg=SEL_FG,
-        run_guarded=run_guarded,
-        set_status=set_status,
+        root,
+        db,
+        BG,
+        FG,
+        BTN_BG,
+        BTN_ACT,
+        SEL_FG,
+        run_guarded,
+        set_status,
     )
 
     ide_tab = IdeAccountsTab(notebook, services)
     codex_tab = CodexTab(notebook, services)
+    auto_scheduler = refresh_scheduler.AutoRefreshScheduler(
+        list_saved_accounts=db.list_saved_accounts,
+        write_saved_account_batch=write_saved_account_mapping_batch,
+        persist_refreshed_group=db.persist_auto_refresh_group,
+        operation_lock=db.SAVED_ACCOUNT_REFRESH_LOCK,
+    )
+    auto_refresh_state = {"running": False}
 
     def refresh_all():
         ide_tab.refresh()
         codex_tab.refresh()
+
+    def request_auto_refresh():
+        started = start_auto_refresh_worker(auto_refresh_queue, auto_scheduler, auto_refresh_state)
+        if not started:
+            schedule_auto_refresh(auto_scheduler.policy.min_delay_ms)
+
+    def schedule_auto_refresh(delay_ms: int):
+        root.after(delay_ms, request_auto_refresh)
 
     def process_ui_queue():
         while True:
@@ -132,6 +204,21 @@ def main():
             refresh_all()
         root.after(100, process_ui_queue)
 
+    def process_auto_refresh_queue():
+        while True:
+            try:
+                result = auto_refresh_queue.get_nowait()
+            except queue.Empty:
+                break
+            auto_refresh_state["running"] = False
+            if result.message:
+                log_auto_refresh_result(result)
+                set_status(result.message, ok=result.ok)
+            if result.refresh_ui:
+                refresh_all()
+            schedule_auto_refresh(result.next_delay_ms)
+        root.after(AUTO_REFRESH_QUEUE_POLL_INTERVAL_MS, process_auto_refresh_queue)
+
     services.refresh_all = refresh_all
 
     status_label = tk.Label(root, textvariable=status_var, bg=BG, fg="#2d8a4e", font=("Segoe UI", 9), anchor="w")
@@ -139,7 +226,9 @@ def main():
 
     refresh_all()
     process_ui_queue()
+    process_auto_refresh_queue()
     poll_ide_runtime_state(root, notebook, ide_tab)
+    schedule_auto_refresh(AUTO_REFRESH_START_DELAY_MS)
     root.update_idletasks()
     root.geometry(f"{max(root.winfo_reqwidth(), WINDOW_WIDTH)}x{root.winfo_reqheight()}")
     root.mainloop()

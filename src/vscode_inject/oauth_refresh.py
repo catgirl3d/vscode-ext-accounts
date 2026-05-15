@@ -17,6 +17,23 @@ OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 KILO_NEW_KEY = "kilo-new://openai"
 CODEX_KEY = "codex://openai"
 DEFAULT_EXPIRES_IN_SECONDS = 3600
+TERMINAL_REFRESH_ERROR_CODES = {
+    "access_denied",
+    "invalid_client",
+    "invalid_grant",
+    "unauthorized_client",
+}
+TERMINAL_REFRESH_ERROR_HINTS = (
+    "already been used",
+    "already used",
+    "invalid refresh token",
+    "refresh token expired",
+    "refresh token has already been used",
+    "refresh token is invalid",
+    "revoked",
+    "session has expired",
+    "sign in again",
+)
 
 
 class OAuthRefreshError(RuntimeError):
@@ -29,6 +46,21 @@ class UnsupportedSavedAccountError(OAuthRefreshError):
 
 class TokenExchangeError(OAuthRefreshError):
     """Raised when the upstream OAuth token endpoint rejects the refresh request."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        error_code: str | None = None,
+        error_description: str | None = None,
+        terminal: bool = False,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+        self.error_description = error_description
+        self.terminal = terminal
 
 
 @dataclass(frozen=True)
@@ -54,6 +86,51 @@ class RefreshEntriesResult:
     refreshed_entries: int
     refreshed_groups: int
     refreshed_at: str
+
+
+@dataclass(frozen=True)
+class SavedAccountRecord:
+    name: str
+    path: str
+    data: Mapping[str, Any]
+    kind: str | None = None
+
+
+@dataclass(frozen=True)
+class RefreshGroupKey:
+    provider: str
+    refresh_token: str
+
+
+@dataclass(frozen=True)
+class RefreshableRecordEntry:
+    record_name: str
+    record_path: str
+    entry_index: int
+    group_key: RefreshGroupKey
+    bundle: TokenBundle
+
+
+@dataclass(frozen=True)
+class RefreshGroup:
+    key: RefreshGroupKey
+    bundle: TokenBundle
+    expires: int
+    entries: tuple[RefreshableRecordEntry, ...]
+
+    def account_names(self) -> tuple[str, ...]:
+        seen: list[str] = []
+        for entry in self.entries:
+            if entry.record_name not in seen:
+                seen.append(entry.record_name)
+        return tuple(seen)
+
+    def record_paths(self) -> tuple[str, ...]:
+        seen: list[str] = []
+        for entry in self.entries:
+            if entry.record_path not in seen:
+                seen.append(entry.record_path)
+        return tuple(seen)
 
 
 RefreshOperation = Callable[[TokenBundle], TokenBundle]
@@ -119,6 +196,36 @@ def extract_account_id(access_token: str, id_token: str | None = None) -> str | 
     return extract_account_id_from_claims(access_claims)
 
 
+def is_terminal_token_exchange_failure(
+    *,
+    status_code: int | None,
+    error_code: str | None,
+    error_message: str | None,
+) -> bool:
+    normalized_code = (error_code or "").strip().lower()
+    normalized_message = (error_message or "").strip().lower()
+
+    if normalized_code in TERMINAL_REFRESH_ERROR_CODES:
+        return True
+
+    if status_code not in {400, 401, 403}:
+        return False
+
+    return any(hint in normalized_message for hint in TERMINAL_REFRESH_ERROR_HINTS)
+
+
+def is_terminal_refresh_error(exc: Exception) -> bool:
+    if not isinstance(exc, TokenExchangeError):
+        return False
+    if exc.terminal:
+        return True
+    return is_terminal_token_exchange_failure(
+        status_code=exc.status_code,
+        error_code=exc.error_code,
+        error_message=exc.error_description or str(exc),
+    )
+
+
 def _oauth_error_details(error_text: str) -> tuple[str | None, str | None]:
     try:
         payload = json.loads(error_text)
@@ -175,9 +282,22 @@ def post_form_urlencoded(
         details = error_message or payload or str(exc.reason)
         if error_code:
             details = f"{error_code}: {details}"
-        raise TokenExchangeError(f"Token refresh failed: {exc.code} {details}") from exc
+        raise TokenExchangeError(
+            f"Token refresh failed: {exc.code} {details}",
+            status_code=exc.code,
+            error_code=error_code,
+            error_description=error_message or payload or str(exc.reason),
+            terminal=is_terminal_token_exchange_failure(
+                status_code=exc.code,
+                error_code=error_code,
+                error_message=error_message or payload or str(exc.reason),
+            ),
+        ) from exc
     except error.URLError as exc:
-        raise TokenExchangeError(f"Token refresh failed: {exc.reason}") from exc
+        raise TokenExchangeError(
+            f"Token refresh failed: {exc.reason}",
+            error_description=str(exc.reason),
+        ) from exc
 
     try:
         parsed = json.loads(payload)
@@ -298,6 +418,150 @@ def collect_refreshable_entries(entries: Sequence[Mapping[str, Any]]) -> list[Re
         )
 
     return refreshable
+
+
+def saved_account_records(records: Sequence[Mapping[str, Any]]) -> list[SavedAccountRecord]:
+    normalized: list[SavedAccountRecord] = []
+
+    for record in records:
+        path = record.get("path")
+        data = record.get("data")
+        readable = record.get("readable", True)
+        if readable is False or not isinstance(path, str) or not isinstance(data, Mapping):
+            continue
+
+        name = record.get("name")
+        kind = record.get("kind")
+        normalized.append(
+            SavedAccountRecord(
+                name=name if isinstance(name, str) else path,
+                path=path,
+                data=data,
+                kind=kind if isinstance(kind, str) else None,
+            )
+        )
+
+    return normalized
+
+
+def _group_expires(entries: Sequence[RefreshableRecordEntry]) -> int:
+    expires_values = [entry.bundle.expires for entry in entries]
+    if any(expires <= 0 for expires in expires_values):
+        return 0
+    return min(expires_values, default=0)
+
+
+def collect_refresh_groups(records: Sequence[SavedAccountRecord]) -> list[RefreshGroup]:
+    grouped: OrderedDict[RefreshGroupKey, list[RefreshableRecordEntry]] = OrderedDict()
+
+    for record in records:
+        entries = record.data.get("entries", []) if isinstance(record.data, Mapping) else []
+        if not isinstance(entries, list):
+            continue
+
+        for entry_index, entry in enumerate(entries):
+            if not isinstance(entry, Mapping):
+                continue
+            key = entry.get("key")
+            value = entry.get("value")
+            if not isinstance(key, str) or not isinstance(value, Mapping):
+                continue
+
+            provider = _provider_for_entry(key, value)
+            if not provider:
+                continue
+
+            bundle = token_bundle_from_value(value)
+            group_key = RefreshGroupKey(provider=provider, refresh_token=bundle.refresh_token)
+            grouped.setdefault(group_key, []).append(
+                RefreshableRecordEntry(
+                    record_name=record.name,
+                    record_path=record.path,
+                    entry_index=entry_index,
+                    group_key=group_key,
+                    bundle=bundle,
+                )
+            )
+
+    return [
+        RefreshGroup(
+            key=group_key,
+            bundle=entries[0].bundle,
+            expires=_group_expires(entries),
+            entries=tuple(entries),
+        )
+        for group_key, entries in grouped.items()
+    ]
+
+
+def refresh_due_at_ms(group: RefreshGroup, refresh_before_ms: int) -> int:
+    if group.expires <= 0:
+        return 0
+    return max(0, group.expires - refresh_before_ms)
+
+
+def apply_refreshed_group(
+    records_by_path: Mapping[str, SavedAccountRecord],
+    group: RefreshGroup,
+    refreshed_bundle: TokenBundle,
+    *,
+    refreshed_at: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    timestamp = refreshed_at or current_time_iso()
+    updated_records: dict[str, dict[str, Any]] = {}
+
+    for refreshable in group.entries:
+        record = records_by_path.get(refreshable.record_path)
+        if record is None:
+            raise OAuthRefreshError(f"Missing saved account record for path '{refreshable.record_path}'.")
+
+        updated_record = updated_records.setdefault(refreshable.record_path, copy.deepcopy(dict(record.data)))
+        entries = updated_record.get("entries")
+        if not isinstance(entries, list) or refreshable.entry_index >= len(entries):
+            raise OAuthRefreshError(
+                f"Saved account '{record.name}' has an invalid entry layout for auto-refresh."
+            )
+
+        existing_entry = entries[refreshable.entry_index]
+        if not isinstance(existing_entry, Mapping):
+            raise OAuthRefreshError(f"Saved account '{record.name}' contains a non-object entry.")
+        value = existing_entry.get("value")
+        if not isinstance(value, Mapping):
+            raise OAuthRefreshError(f"Saved account '{record.name}' contains an invalid OAuth value payload.")
+
+        updated_entry = dict(existing_entry)
+        updated_entry["value"] = apply_refreshed_bundle(value, refreshed_bundle)
+        entries[refreshable.entry_index] = updated_entry
+        updated_record["last_refreshed_at"] = timestamp
+        updated_record["refresh_status"] = "ok"
+        updated_record.pop("refresh_error", None)
+        updated_record.pop("refresh_error_at", None)
+
+    return updated_records
+
+
+def apply_refresh_error(
+    records_by_path: Mapping[str, SavedAccountRecord],
+    group: RefreshGroup,
+    *,
+    status: str,
+    error_message: str,
+    error_at: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    timestamp = error_at or current_time_iso()
+    updated_records: dict[str, dict[str, Any]] = {}
+
+    for refreshable in group.entries:
+        record = records_by_path.get(refreshable.record_path)
+        if record is None:
+            raise OAuthRefreshError(f"Missing saved account record for path '{refreshable.record_path}'.")
+
+        updated_record = updated_records.setdefault(refreshable.record_path, copy.deepcopy(dict(record.data)))
+        updated_record["refresh_status"] = status
+        updated_record["refresh_error"] = error_message
+        updated_record["refresh_error_at"] = timestamp
+
+    return updated_records
 
 
 def apply_refreshed_bundle(value: Mapping[str, Any], bundle: TokenBundle) -> dict[str, Any]:

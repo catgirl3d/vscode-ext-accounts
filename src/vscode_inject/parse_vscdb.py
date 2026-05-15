@@ -8,7 +8,10 @@ import json
 import os
 import base64
 import datetime
+import tempfile
+import threading
 import zipfile
+from typing import Mapping, Sequence
 
 from . import codex_accounts as codex_store
 from . import oauth_refresh
@@ -62,6 +65,28 @@ class AccountNotFoundError(SavedAccountError):
 
 class AccountKindMismatchError(SavedAccountError):
     """Raised when a saved account exists, but not for the requested target kind."""
+
+
+class SavedAccountRefreshError(UserFacingError):
+    """Raised when a manual saved-account refresh fails in an expected way."""
+
+
+class RefreshedCredentialsPersistenceError(UserFacingError):
+    """Raised when refreshed credentials were obtained but could not be saved locally."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        recovery_path: str | None = None,
+        recovery_error: Exception | None = None,
+    ):
+        super().__init__(message)
+        self.recovery_path = recovery_path
+        self.recovery_error = recovery_error
+
+
+SAVED_ACCOUNT_REFRESH_LOCK = threading.RLock()
 
 
 def set_ide(name: str):
@@ -284,6 +309,12 @@ PROJECT_ROOT = os.path.dirname(SRC_ROOT)
 
 def _backups_dir() -> str:
     path = os.path.join(PROJECT_ROOT, "backups")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _refresh_recovery_dir() -> str:
+    path = os.path.join(_backups_dir(), "refresh_recovery")
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -652,6 +683,142 @@ def list_saved_accounts(kind: str | None = None) -> list[dict]:
     return saved_store.list_saved_accounts(_accounts_dir(), CODEX_KEY, kind)
 
 
+def write_saved_account_batch(updates: dict[str, dict] | list[tuple[str, dict]]) -> None:
+    saved_store.write_saved_account_batch(updates)
+
+
+def _normalize_saved_account_updates(
+    updates: Mapping[str, dict] | Sequence[tuple[str, dict]],
+) -> list[tuple[str, dict]]:
+    return list(updates.items()) if isinstance(updates, Mapping) else list(updates)
+
+
+def _write_refresh_recovery_snapshot(
+    updates: Mapping[str, dict] | Sequence[tuple[str, dict]],
+    *,
+    subject_label: str,
+    account_names: Sequence[str],
+    providers: Sequence[str],
+    operation: str,
+    created_at: str | None = None,
+) -> str:
+    items = _normalize_saved_account_updates(updates)
+    payload = {
+        "version": 1,
+        "kind": "saved-account-refresh-recovery",
+        "created_at": created_at or oauth_refresh.current_time_iso(),
+        "operation": operation,
+        "subject": subject_label,
+        "account_names": list(account_names),
+        "providers": list(providers),
+        "records": [{"path": path, "data": data} for path, data in items],
+    }
+
+    fd, recovery_path = tempfile.mkstemp(
+        prefix=f"{operation}-",
+        suffix=".json",
+        dir=_refresh_recovery_dir(),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, ensure_ascii=False)
+    except Exception:
+        try:
+            os.unlink(recovery_path)
+        except FileNotFoundError:
+            pass
+        raise
+    return recovery_path
+
+
+def _cleanup_refresh_recovery_snapshot(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"WARNING: Failed to remove refresh recovery snapshot {path}: {exc}")
+
+
+def _refreshed_credentials_persistence_message(
+    *,
+    subject_label: str,
+    save_error: Exception,
+    recovery_path: str | None,
+    recovery_error: Exception | None,
+) -> str:
+    base = f"Refreshed {subject_label}, but failed to persist the new credentials locally: {save_error}."
+    if recovery_path:
+        return (
+            f"{base} A recovery snapshot was saved to {recovery_path}. "
+            "The previous saved snapshot may already be invalid, so manual sign-in may be required if the recovery snapshot cannot be restored."
+        )
+    recovery_suffix = ""
+    if recovery_error is not None:
+        recovery_suffix = f" ({recovery_error})"
+    return (
+        f"{base} No recovery snapshot could be written{recovery_suffix}. "
+        "The previous saved snapshot may already be invalid, and manual sign-in may be required."
+    )
+
+
+def persist_refreshed_saved_account_batch(
+    updates: Mapping[str, dict] | Sequence[tuple[str, dict]],
+    *,
+    subject_label: str,
+    account_names: Sequence[str],
+    providers: Sequence[str],
+    operation: str,
+) -> None:
+    items = _normalize_saved_account_updates(updates)
+    write_updates = dict(items)
+    recovery_path: str | None = None
+    recovery_error: Exception | None = None
+
+    try:
+        recovery_path = _write_refresh_recovery_snapshot(
+            items,
+            subject_label=subject_label,
+            account_names=account_names,
+            providers=providers,
+            operation=operation,
+        )
+    except Exception as exc:
+        recovery_error = exc
+
+    try:
+        write_saved_account_batch(write_updates)
+    except Exception as exc:
+        raise RefreshedCredentialsPersistenceError(
+            _refreshed_credentials_persistence_message(
+                subject_label=subject_label,
+                save_error=exc,
+                recovery_path=recovery_path,
+                recovery_error=recovery_error,
+            ),
+            recovery_path=recovery_path,
+            recovery_error=recovery_error,
+        ) from exc
+
+    if recovery_path:
+        _cleanup_refresh_recovery_snapshot(recovery_path)
+
+
+def persist_auto_refresh_group(
+    updates: Mapping[str, dict] | Sequence[tuple[str, dict]],
+    group: oauth_refresh.RefreshGroup,
+) -> None:
+    account_names = group.account_names()
+    names = ", ".join(account_names) or "saved account"
+    persist_refreshed_saved_account_batch(
+        updates,
+        subject_label=f"token group for {names}",
+        account_names=account_names,
+        providers=(group.key.provider,),
+        operation="auto-refresh",
+    )
+
+
 def _read_codex_auth() -> dict:
     return codex_store.read_codex_auth(CODEX_AUTH_PATH)
 
@@ -968,32 +1135,50 @@ def save_codex_account(name: str):
 
 
 def refresh_saved_account(name: str) -> str:
-    path, account_data, _kind = _load_saved_account_data(name)
-    entries = account_data.get("entries", []) if isinstance(account_data, dict) else []
-    if not isinstance(entries, list):
-        raise ValueError(f"Account '{name}' has an invalid entries payload.")
+    with SAVED_ACCOUNT_REFRESH_LOCK:
+        path, account_data, _kind = _load_saved_account_data(name)
+        entries = account_data.get("entries", []) if isinstance(account_data, dict) else []
+        if not isinstance(entries, list):
+            raise ValueError(f"Account '{name}' has an invalid entries payload.")
 
-    updated_data = dict(account_data)
-    try:
-        refreshed = oauth_refresh.refresh_saved_entries(entries)
-    except oauth_refresh.OAuthRefreshError as exc:
-        updated_data["refresh_status"] = "error"
-        updated_data["refresh_error"] = str(exc)
-        saved_store.write_saved_account_data(path, updated_data)
-        raise
+        refreshable_entries = oauth_refresh.collect_refreshable_entries(entries)
+        providers: list[str] = []
+        for refreshable in refreshable_entries:
+            if refreshable.provider not in providers:
+                providers.append(refreshable.provider)
 
-    updated_data["entries"] = refreshed.entries
-    updated_data["last_refreshed_at"] = refreshed.refreshed_at
-    updated_data["refresh_status"] = "ok"
-    updated_data.pop("refresh_error", None)
-    saved_store.write_saved_account_data(path, updated_data)
+        updated_data = dict(account_data)
+        try:
+            refreshed = oauth_refresh.refresh_saved_entries(entries)
+        except oauth_refresh.OAuthRefreshError as exc:
+            updated_data["refresh_status"] = "error"
+            updated_data["refresh_error"] = str(exc)
+            updated_data["refresh_error_at"] = oauth_refresh.current_time_iso()
+            write_saved_account_batch({path: updated_data})
+            raise SavedAccountRefreshError(f"Refresh failed for '{name}': {exc}") from exc
 
-    group_label = "group" if refreshed.refreshed_groups == 1 else "groups"
-    entry_label = "entry" if refreshed.refreshed_entries == 1 else "entries"
-    return (
-        f"Refreshed '{name}' "
-        f"({refreshed.refreshed_groups} token {group_label}, {refreshed.refreshed_entries} {entry_label})"
-    )
+        updated_data["entries"] = refreshed.entries
+        updated_data["last_refreshed_at"] = refreshed.refreshed_at
+        updated_data["refresh_status"] = "ok"
+        updated_data.pop("refresh_error", None)
+        updated_data.pop("refresh_error_at", None)
+        try:
+            persist_refreshed_saved_account_batch(
+                {path: updated_data},
+                subject_label=f"saved account '{name}'",
+                account_names=(name,),
+                providers=providers,
+                operation="manual-refresh",
+            )
+        except RefreshedCredentialsPersistenceError as exc:
+            raise SavedAccountRefreshError(str(exc)) from exc
+
+        group_label = "group" if refreshed.refreshed_groups == 1 else "groups"
+        entry_label = "entry" if refreshed.refreshed_entries == 1 else "entries"
+        return (
+            f"Refreshed '{name}' "
+            f"({refreshed.refreshed_groups} token {group_label}, {refreshed.refreshed_entries} {entry_label})"
+        )
 
 
 def use_ide_account(
