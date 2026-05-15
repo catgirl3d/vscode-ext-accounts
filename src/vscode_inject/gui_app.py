@@ -22,6 +22,23 @@ SEL_BG = "#89b4fa"
 SEL_FG = "#1e1e2e"
 
 
+def fit_window_to_active_tab(root, notebook, tab_frames, min_width=WINDOW_WIDTH):
+    try:
+        root.update_idletasks()
+        active_tab = notebook.select()
+        active_frame = next((frame for frame in tab_frames if str(frame) == active_tab), None)
+        if active_frame is None:
+            return
+
+        max_tab_height = max(frame.winfo_reqheight() for frame in tab_frames)
+        root_overhead = max(root.winfo_reqheight() - max_tab_height, 0)
+        width = max(root.winfo_reqwidth(), min_width)
+        height = root_overhead + active_frame.winfo_reqheight()
+        root.geometry(f"{width}x{height}")
+    except Exception:
+        pass
+
+
 def poll_ide_runtime_state(root, notebook, ide_tab, interval_ms=POLL_INTERVAL_MS):
     try:
         if notebook.select() == str(ide_tab.frame):
@@ -104,6 +121,7 @@ def main():
 
     ide_tab = IdeAccountsTab(notebook, services)
     codex_tab = CodexTab(notebook, services)
+    tab_frames = (ide_tab.frame, codex_tab.frame)
 
     def refresh_all():
         ide_tab.refresh()
@@ -118,9 +136,15 @@ def main():
             if message:
                 set_status(message, ok=ok)
             refresh_all()
+            fit_window_to_active_tab(root, notebook, tab_frames)
         root.after(100, process_ui_queue)
 
     services.refresh_all = refresh_all
+
+    def on_tab_changed(_event=None):
+        fit_window_to_active_tab(root, notebook, tab_frames)
+
+    notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
 
     status_label = tk.Label(root, textvariable=status_var, bg=BG, fg="#2d8a4e", font=("Segoe UI", 9), anchor="w")
     status_label.pack(fill="x", padx=10, pady=(0, 8))
@@ -128,8 +152,7 @@ def main():
     refresh_all()
     process_ui_queue()
     poll_ide_runtime_state(root, notebook, ide_tab)
-    root.update_idletasks()
-    root.geometry(f"{max(root.winfo_reqwidth(), WINDOW_WIDTH)}x{root.winfo_reqheight()}")
+    fit_window_to_active_tab(root, notebook, tab_frames)
     root.mainloop()
 
 

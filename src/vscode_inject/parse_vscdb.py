@@ -875,6 +875,30 @@ def _saved_codex_entry(data: dict) -> dict | None:
     return None
 
 
+def _saved_ide_source_entry_for_codex(data: dict) -> dict | None:
+    entries = data.get("entries", []) if isinstance(data, dict) else []
+    ide_entries = [entry for entry in entries if entry.get("key") != CODEX_KEY]
+    source = next(iter(ide_entries), None)
+    source_db = next((entry for entry in ide_entries if entry.get("key") != KILO_NEW_KEY), None)
+    source_kilo_new = next((entry for entry in ide_entries if entry.get("key") == KILO_NEW_KEY), None)
+    return source_db or source_kilo_new or source
+
+
+def _write_codex_auth_from_value(value: dict, *, note: str):
+    create_prewrite_backup(include_codex=True, note=note)
+    print()
+
+    try:
+        codex_auth = _to_codex_format(value, _read_codex_auth())
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+
+    _write_codex_auth(codex_auth)
+    print(f"[codex] Written to {CODEX_AUTH_PATH}")
+    print(f"  accountId: {codex_auth.get('tokens', {}).get('account_id', '?')}")
+
+
 def _read_current_ide_entries_for_selection(ext_names: list[str]) -> list[dict]:
     import shutil
     import tempfile
@@ -1050,18 +1074,18 @@ def use_codex_account(name: str):
         print(f"Account '{name}' does not contain a Codex entry.")
         sys.exit(1)
 
-    create_prewrite_backup(include_codex=True, note=f"before applying Codex account '{name}'")
-    print()
+    _write_codex_auth_from_value(source_entry["value"], note=f"before applying Codex account '{name}'")
 
-    try:
-        codex_auth = _to_codex_format(source_entry["value"], _read_codex_auth())
-    except ValueError as e:
-        print(f"ERROR: {e}")
+
+def use_ide_account_for_codex(name: str):
+    """Apply a saved IDE-family account to ~/.codex/auth.json."""
+    _path, account_data, _kind = _load_saved_account_data(name, expected_kind="ide")
+    source_entry = _saved_ide_source_entry_for_codex(account_data)
+    if not source_entry:
+        print(f"Account '{name}' does not contain IDE account data.")
         sys.exit(1)
 
-    _write_codex_auth(codex_auth)
-    print(f"[codex] Written to {CODEX_AUTH_PATH}")
-    print(f"  accountId: {codex_auth.get('tokens', {}).get('account_id', '?')}")
+    _write_codex_auth_from_value(source_entry["value"], note=f"before applying IDE account '{name}' to Codex")
 
 
 def import_codex_account(auth_path: str, name: str):

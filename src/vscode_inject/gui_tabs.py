@@ -376,10 +376,10 @@ class IdeAccountsTab:
         if not exts:
             return
 
-        target_ides = self.target_ides_for_exts(exts)
-        running_ides = [ide for ide in target_ides if self.services.db.is_ide_running(ide)]
-        if running_ides:
-            running_labels = self.format_ide_labels(running_ides)
+        db_target_ides = self.db_target_ides_for_exts(exts)
+        running_db_ides = [ide for ide in db_target_ides if self.services.db.is_ide_running(ide)]
+        if running_db_ides:
+            running_labels = self.format_ide_labels(running_db_ides)
             messagebox.showerror(f"{running_labels} running", f"Close {running_labels} before switching accounts.")
             return
 
@@ -429,6 +429,7 @@ class CodexTab:
     def __init__(self, notebook: ttk.Notebook, services: GuiServices):
         self.services = services
         self.frame = tk.Frame(notebook, bg=services.bg)
+        self.active_view = "codex"
         notebook.add(self.frame, text="Codex")
         self._build()
 
@@ -455,8 +456,43 @@ class CodexTab:
         self.current_value = tk.Label(current_frame, text="-", bg=bg, fg="#6c7086", font=("Segoe UI", 9))
         self.current_value.pack(side="left")
 
+        switch_frame = tk.Frame(self.frame, bg=bg)
+        switch_frame.pack(fill="x", padx=10, pady=(0, 6))
+        tk.Label(switch_frame, text="View:", bg=bg, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(side="left")
+
+        self.codex_view_button = tk.Button(
+            switch_frame,
+            text="Saved Codex",
+            command=lambda: self.show_view("codex"),
+            relief="flat",
+            padx=12,
+            pady=5,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+        )
+        self.codex_view_button.pack(side="left", padx=(8, 4))
+        self.ide_view_button = tk.Button(
+            switch_frame,
+            text="From IDE",
+            command=lambda: self.show_view("ide"),
+            relief="flat",
+            padx=12,
+            pady=5,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+        )
+        self.ide_view_button.pack(side="left", padx=4)
+
+        self.panel_container = tk.Frame(self.frame, bg=bg)
+        self.panel_container.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+
+        self.codex_panel = tk.Frame(self.panel_container, bg=bg)
+        tk.Label(self.codex_panel, text="Saved Codex accounts:", bg=bg, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(
+            anchor="w", pady=(0, 4)
+        )
+
         cols = ("name", "accountId", "saved", "expires", "active")
-        self.tree = ttk.Treeview(self.frame, columns=cols, show="headings", height=8, selectmode="browse")
+        self.tree = ttk.Treeview(self.codex_panel, columns=cols, show="headings", height=8, selectmode="browse")
         self.tree.heading("name", text="Name")
         self.tree.heading("accountId", text="Account ID")
         self.tree.heading("saved", text="Saved")
@@ -467,15 +503,66 @@ class CodexTab:
         self.tree.column("saved", width=120, anchor="center")
         self.tree.column("expires", width=100, anchor="center")
         self.tree.column("active", width=90, anchor="center")
-        self.tree.pack(padx=10, pady=(0, 6))
+        self.tree.pack(pady=(0, 6))
 
-        btn_frame = tk.Frame(self.frame, bg=bg)
-        btn_frame.pack(padx=10, pady=(0, 6))
+        btn_frame = tk.Frame(self.codex_panel, bg=bg)
+        btn_frame.pack(pady=(0, 6))
         tab_button(btn_frame, self.services, "💾 Save current Codex", self.on_save, accent=True)
         tab_button(btn_frame, self.services, "📥 Import Codex auth", self.on_import)
         tab_button(btn_frame, self.services, "▶ Use selected Codex", self.on_use)
         tab_button(btn_frame, self.services, "🗑 Delete", self.on_delete)
         tab_button(btn_frame, self.services, "⟳ Refresh", self.on_refresh)
+
+        self.ide_panel = tk.Frame(self.panel_container, bg=bg)
+        tk.Label(
+            self.ide_panel,
+            text="Saved IDE accounts that can be applied to Codex:",
+            bg=bg,
+            fg="#6c7086",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+
+        ide_cols = ("name", "ext", "accountIds", "saved", "expires", "reuse")
+        self.ide_tree = ttk.Treeview(self.ide_panel, columns=ide_cols, show="headings", height=8, selectmode="browse")
+        self.ide_tree.heading("name", text="Name")
+        self.ide_tree.heading("ext", text="Ext")
+        self.ide_tree.heading("accountIds", text="Account IDs")
+        self.ide_tree.heading("saved", text="Saved")
+        self.ide_tree.heading("expires", text="Expires")
+        self.ide_tree.heading("reuse", text="Reuse ID")
+        self.ide_tree.column("name", width=130, anchor="w")
+        self.ide_tree.column("ext", width=170, anchor="w")
+        self.ide_tree.column("accountIds", width=170, anchor="w")
+        self.ide_tree.column("saved", width=110, anchor="center")
+        self.ide_tree.column("expires", width=90, anchor="center")
+        self.ide_tree.column("reuse", width=80, anchor="center")
+        self.ide_tree.pack(pady=(0, 6))
+
+        ide_btn_frame = tk.Frame(self.ide_panel, bg=bg)
+        ide_btn_frame.pack(pady=(0, 6))
+        tab_button(ide_btn_frame, self.services, "▶ Use IDE account for Codex", self.on_use_ide_account)
+
+        self.show_view(self.active_view)
+
+    def show_view(self, view: str):
+        self.active_view = view
+
+        for panel in (self.codex_panel, self.ide_panel):
+            panel.pack_forget()
+
+        active_bg = "#89b4fa"
+        active_fg = self.services.sel_fg
+        inactive_bg = self.services.btn_bg
+        inactive_fg = self.services.fg
+
+        if view == "codex":
+            self.codex_panel.pack(fill="both", expand=True)
+            self.codex_view_button.config(bg=active_bg, fg=active_fg, activebackground=active_bg, activeforeground=active_fg)
+            self.ide_view_button.config(bg=inactive_bg, fg=inactive_fg, activebackground=self.services.btn_act, activeforeground=inactive_fg)
+        else:
+            self.ide_panel.pack(fill="both", expand=True)
+            self.ide_view_button.config(bg=active_bg, fg=active_fg, activebackground=active_bg, activeforeground=active_fg)
+            self.codex_view_button.config(bg=inactive_bg, fg=inactive_fg, activebackground=self.services.btn_act, activeforeground=inactive_fg)
 
     def update_current_label(self, current_account):
         if current_account:
@@ -486,6 +573,7 @@ class CodexTab:
     def refresh(self):
         db = self.services.db
         self.tree.delete(*self.tree.get_children())
+        self.ide_tree.delete(*self.ide_tree.get_children())
 
         try:
             current_codex = db.read_current_codex_account().get(db.CODEX_KEY, {})
@@ -494,6 +582,7 @@ class CodexTab:
         self.update_current_label(current_codex)
 
         current_fp = current_codex.get("fingerprint")
+        current_account_id = current_codex.get("accountId")
         for record in db.list_saved_accounts("codex"):
             name = record["name"]
             data = record["data"]
@@ -508,6 +597,27 @@ class CodexTab:
             expires = format_expires_ms(value.get("expires"))
             active = "active" if current_fp and db.account_fingerprint(value) == current_fp else "-"
             self.tree.insert("", "end", iid=name, values=(name, account_id, saved_at, expires, active))
+
+        for record in db.list_saved_accounts("ide"):
+            name = record["name"]
+            data = record["data"]
+            ide_entries = [entry for entry in data.get("entries", []) if entry.get("key") != db.CODEX_KEY]
+            if not ide_entries:
+                continue
+
+            saved_at = format_saved_at(data)
+            ext_tag = data.get("ext", "both")
+            accounts_short = summarize_account_ids(ide_entries)
+            expires = first_expires(ide_entries)
+            reuse = "-"
+            if current_account_id:
+                for entry in ide_entries:
+                    value = entry.get("value", {})
+                    if isinstance(value, dict) and value.get("accountId") == current_account_id:
+                        reuse = "ready"
+                        break
+
+            self.ide_tree.insert("", "end", iid=name, values=(name, ext_tag, accounts_short, saved_at, expires, reuse))
 
     def on_save(self):
         name = ask_account_name(self.services.root, "Save Codex account", "Account name:")
@@ -536,6 +646,22 @@ class CodexTab:
         if not messagebox.askyesno("Switch Codex account", f"Apply Codex account '{name}' to auth.json?"):
             return
         self.services.run_guarded(self.services.db.use_codex_account, name, success_msg=f"Switched Codex to '{name}'")
+
+    def on_use_ide_account(self):
+        name = selected_name(self.ide_tree, "Select an IDE account first.")
+        if not name:
+            return
+        prompt = (
+            f"Apply saved IDE account '{name}' to Codex auth.json?\n"
+            "Codex must be able to reuse an id_token for the same account."
+        )
+        if not messagebox.askyesno("Apply IDE account to Codex", prompt):
+            return
+        self.services.run_guarded(
+            self.services.db.use_ide_account_for_codex,
+            name,
+            success_msg=f"Applied IDE account '{name}' to Codex",
+        )
 
     def on_delete(self):
         name = selected_name(self.tree, "Select a Codex account first.")

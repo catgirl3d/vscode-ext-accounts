@@ -26,8 +26,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from vscode_inject import parse_vscdb as db
-from vscode_inject.gui_app import POLL_INTERVAL_MS, poll_ide_runtime_state
-from vscode_inject.gui_tabs import GuiServices, IdeAccountsTab
+from vscode_inject.gui_app import POLL_INTERVAL_MS, fit_window_to_active_tab, poll_ide_runtime_state
+from vscode_inject.gui_tabs import CodexTab, GuiServices, IdeAccountsTab
 
 
 def create_state_db(path: Path, rows: list[tuple[str, object]]) -> None:
@@ -1019,6 +1019,73 @@ class ParseVscdbTests(unittest.TestCase):
             [{"tokens": {"account_id": "acct-codex"}, "auth_mode": "chatgpt"}],
         )
 
+    def test_use_ide_account_for_codex_uses_preferred_ide_source(self):
+        db_source = {
+            "accountId": "acct-db",
+            "access_token": "access-db",
+            "refresh_token": "refresh-db",
+            "expires": 111,
+        }
+        kilo_source = {
+            "accountId": "acct-kilo",
+            "access_token": "access-kilo",
+            "refresh_token": "refresh-kilo",
+            "expires": 222,
+        }
+        account_data = {
+            "entries": [
+                {
+                    "key": db._entry_key_for_ext(db.IDE_EXTENSIONS["kilocode"]),
+                    "value": db_source,
+                },
+                {
+                    "key": db.KILO_NEW_KEY,
+                    "value": kilo_source,
+                },
+            ]
+        }
+
+        backup_calls: list[dict[str, object]] = []
+        converted_values: list[tuple[dict, dict | None]] = []
+        written_auth: list[dict] = []
+
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: ("ide.json", account_data, "ide"),
+        )
+        self.patch_db("create_prewrite_backup", lambda **kwargs: backup_calls.append(kwargs))
+        self.patch_db("_read_codex_auth", lambda: {"tokens": {"account_id": "acct-db"}})
+
+        def fake_to_codex_format(value, existing=None):
+            converted_values.append((value, existing))
+            return {"tokens": {"account_id": value["accountId"]}, "auth_mode": "chatgpt"}
+
+        self.patch_db("_to_codex_format", fake_to_codex_format)
+        self.patch_db("_write_codex_auth", lambda data: written_auth.append(data))
+
+        db.use_ide_account_for_codex("alice")
+
+        self.assertEqual(
+            backup_calls,
+            [{"include_codex": True, "note": "before applying IDE account 'alice' to Codex"}],
+        )
+        self.assertEqual(converted_values, [(db_source, {"tokens": {"account_id": "acct-db"}})])
+        self.assertEqual(
+            written_auth,
+            [{"tokens": {"account_id": "acct-db"}, "auth_mode": "chatgpt"}],
+        )
+
+    def test_use_ide_account_for_codex_exits_without_ide_entries(self):
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: ("ide.json", {"entries": []}, "ide"),
+        )
+
+        code, output = self.capture_exit(db.use_ide_account_for_codex, "alice")
+
+        self.assertEqual(code, 1)
+        self.assertIn("Account 'alice' does not contain IDE account data.", output)
+
 
 class IdeAccountsTabTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1124,7 +1191,150 @@ class IdeAccountsTabTests(unittest.TestCase):
         self.assertEqual(update_visibility.call_count, 1)
 
 
+class CodexTabTests(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(str(exc))
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+
+    def make_db(self):
+        codex_key = "codex://openai"
+        codex_records = [
+            {
+                "name": "codex_alice",
+                "data": {
+                    "saved_at": "2026-05-15T12:00:00",
+                    "entries": [
+                        {
+                            "key": codex_key,
+                            "value": {
+                                "accountId": "acct-1",
+                                "refresh_token": "fp-codex",
+                                "expires": 1711111111000,
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+        ide_records = [
+            {
+                "name": "ide_alice",
+                "data": {
+                    "saved_at": "2026-05-15T11:30:00",
+                    "ext": "kilocode",
+                    "entries": [
+                        {
+                            "key": 'secret://{"extensionId":"kilocode.kilo-code","key":"openai-codex-oauth-credentials"}',
+                            "value": {
+                                "accountId": "acct-1",
+                                "refresh_token": "refresh-ide",
+                                "expires": 1711111111000,
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+        use_codex_account = Mock(name="use_codex_account")
+        use_ide_account_for_codex = Mock(name="use_ide_account_for_codex")
+
+        return SimpleNamespace(
+            CODEX_AUTH_PATH=r"C:\Users\Test\.codex\auth.json",
+            CODEX_KEY=codex_key,
+            account_fingerprint=lambda value: value.get("refresh_token"),
+            read_current_codex_account=lambda: {codex_key: {"accountId": "acct-1", "fingerprint": "fp-codex"}},
+            list_saved_accounts=lambda kind: codex_records if kind == "codex" else ide_records,
+            use_codex_account=use_codex_account,
+            use_ide_account_for_codex=use_ide_account_for_codex,
+        )
+
+    def make_services(self, db_module):
+        return GuiServices(
+            root=self.root,
+            db=db_module,
+            bg="#1e1e2e",
+            fg="#cdd6f4",
+            btn_bg="#313244",
+            btn_act="#45475a",
+            sel_fg="#1e1e2e",
+            run_guarded=lambda *args, **kwargs: None,
+            set_status=lambda *args, **kwargs: None,
+        )
+
+    def test_refresh_lists_saved_ide_accounts_for_codex_apply(self):
+        notebook = ttk.Notebook(self.root)
+        tab = CodexTab(notebook, self.make_services(self.make_db()))
+
+        tab.refresh()
+
+        values = tab.ide_tree.item("ide_alice", "values")
+        self.assertEqual(values[0], "ide_alice")
+        self.assertEqual(values[1], "kilocode")
+        self.assertEqual(values[5], "ready")
+
+    def test_codex_tab_shows_one_panel_at_a_time(self):
+        notebook = ttk.Notebook(self.root)
+        tab = CodexTab(notebook, self.make_services(self.make_db()))
+
+        self.root.update_idletasks()
+        self.assertEqual(tab.codex_panel.winfo_manager(), "pack")
+        self.assertEqual(tab.ide_panel.winfo_manager(), "")
+
+        tab.show_view("ide")
+
+        self.root.update_idletasks()
+        self.assertEqual(tab.codex_panel.winfo_manager(), "")
+        self.assertEqual(tab.ide_panel.winfo_manager(), "pack")
+
+    def test_on_use_ide_account_runs_dedicated_codex_apply_flow(self):
+        db_module = self.make_db()
+        services = self.make_services(db_module)
+        services.run_guarded = Mock()
+        notebook = ttk.Notebook(self.root)
+        tab = CodexTab(notebook, services)
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="ide_alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
+        ):
+            tab.on_use_ide_account()
+
+        services.run_guarded.assert_called_once_with(
+            db_module.use_ide_account_for_codex,
+            "ide_alice",
+            success_msg="Applied IDE account 'ide_alice' to Codex",
+        )
+
+
 class GuiAppPollingTests(unittest.TestCase):
+    def test_fit_window_to_active_tab_uses_selected_tab_height(self):
+        class FrameStub:
+            def __init__(self, name: str, reqheight: int):
+                self.name = name
+                self.reqheight = reqheight
+
+            def __str__(self):
+                return self.name
+
+            def winfo_reqheight(self):
+                return self.reqheight
+
+        root = Mock()
+        root.winfo_reqheight.return_value = 620
+        root.winfo_reqwidth.return_value = 900
+        notebook = Mock()
+        notebook.select.return_value = ".ide"
+        ide_frame = FrameStub(".ide", 420)
+        codex_frame = FrameStub(".codex", 520)
+
+        fit_window_to_active_tab(root, notebook, (ide_frame, codex_frame), min_width=980)
+
+        root.update_idletasks.assert_called_once_with()
+        root.geometry.assert_called_once_with("980x520")
+
     def test_poll_ide_runtime_state_runs_only_for_active_ide_tab(self):
         root = Mock()
         notebook = Mock()
