@@ -224,6 +224,7 @@ class IdeAccountsTab:
         self.btn_frame.pack(padx=10, pady=(0, 6))
         tab_button(self.btn_frame, self.services, "💾 Save current", self.on_save, accent=True)
         tab_button(self.btn_frame, self.services, "▶ Use selected", self.on_use)
+        tab_button(self.btn_frame, self.services, "↻ Refresh selected", self.on_refresh_selected)
         tab_button(self.btn_frame, self.services, "🗑 Delete", self.on_delete)
         tab_button(self.btn_frame, self.services, "⟳ Refresh", self.on_refresh)
         self.run_button = tab_button(self.btn_frame, self.services, "RUN", self.on_run)
@@ -390,8 +391,8 @@ class IdeAccountsTab:
         if not exts:
             return
 
-        target_ides = self.target_ides_for_exts(exts)
-        running_ides = [ide for ide in target_ides if self.services.db.is_ide_running(ide)]
+        db_target_ides = self.db_target_ides_for_exts(exts)
+        running_ides = [ide for ide in db_target_ides if self.services.db.is_ide_running(ide)]
         if running_ides:
             running_labels = self.format_ide_labels(running_ides)
             messagebox.showerror(f"{running_labels} running", f"Close {running_labels} before switching accounts.")
@@ -445,6 +446,12 @@ class IdeAccountsTab:
             self.services.refresh_all()
         except Exception as exc:
             self.services.set_status(str(exc), False)
+
+    def on_refresh_selected(self):
+        name = selected_name(self.tree, "Select an IDE account first.")
+        if not name:
+            return
+        self.services.run_guarded(self.services.db.refresh_saved_account, name)
 
     def on_backup(self):
         self.services.run_guarded(self.services.db.backup)
@@ -514,6 +521,7 @@ class CodexTab:
         tab_button(btn_frame, self.services, "💾 Save current Codex", self.on_save, accent=True)
         tab_button(btn_frame, self.services, "📥 Import Codex auth", self.on_import)
         tab_button(btn_frame, self.services, "▶ Use selected Codex", self.on_use)
+        tab_button(btn_frame, self.services, "↻ Refresh selected", self.on_refresh_selected)
         tab_button(btn_frame, self.services, "🗑 Delete", self.on_delete)
         tab_button(btn_frame, self.services, "⟳ Refresh", self.on_refresh)
 
@@ -589,6 +597,12 @@ class CodexTab:
             self.services.refresh_all()
         except Exception as exc:
             self.services.set_status(str(exc), False)
+
+    def on_refresh_selected(self):
+        name = selected_name(self.tree, "Select a Codex account first.")
+        if not name:
+            return
+        self.services.run_guarded(self.services.db.refresh_saved_account, name)
 
     def on_refresh(self):
         self.services.refresh_all()

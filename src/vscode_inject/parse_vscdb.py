@@ -6,12 +6,12 @@ On Windows, encrypted values (v10 prefix) are decrypted via DPAPI + AES-256-GCM.
 import sqlite3
 import json
 import os
-import sys
 import base64
 import datetime
 import zipfile
 
 from . import codex_accounts as codex_store
+from . import oauth_refresh
 from . import saved_accounts as saved_store
 
 IDE_PATHS = {
@@ -46,6 +46,22 @@ IDE_PATHS = {
 CURRENT_IDE = "vscode"
 DB_PATH = IDE_PATHS["vscode"]["db"]
 LOCAL_STATE_PATH = IDE_PATHS["vscode"]["local_state"]
+
+
+class UserFacingError(RuntimeError):
+    """Expected backend error that can be shown directly in the GUI."""
+
+
+class SavedAccountError(UserFacingError):
+    """Base class for saved-account selection and validation errors."""
+
+
+class AccountNotFoundError(SavedAccountError):
+    """Raised when a saved account name does not exist."""
+
+
+class AccountKindMismatchError(SavedAccountError):
+    """Raised when a saved account exists, but not for the requested target kind."""
 
 
 def set_ide(name: str):
@@ -230,11 +246,10 @@ def is_ide_running(ide: str | None = None) -> bool:
 
 
 def guard_vscode_closed():
-    """Exit with error if the current IDE is running."""
+    """Raise when the current IDE is still running."""
     if is_ide_running():
         label = IDE_PATHS[CURRENT_IDE]["label"]
-        print(f"ERROR: {label} is running. Close it before making changes.")
-        sys.exit(1)
+        raise UserFacingError(f"ERROR: {label} is running. Close it before making changes.")
 
 
 def encrypt_value(plaintext: str, aes_key: bytes) -> bytes:
@@ -454,35 +469,31 @@ def restore(backup_path: str, key_filter: str | None = None, *, create_safety_ba
     The currently selected IDE must be closed before running this.
     """
     if not os.path.exists(backup_path):
-        print(f"Backup file not found: {backup_path}")
-        sys.exit(1)
+        raise UserFacingError(f"Backup file not found: {backup_path}")
 
     if not os.path.exists(DB_PATH):
-        print(f"DB not found: {DB_PATH}")
-        sys.exit(1)
+        raise UserFacingError(f"DB not found: {DB_PATH}")
 
     with open(backup_path, "r", encoding="utf-8") as f:
         backup_data = json.load(f)
 
     all_entries = backup_data.get("entries", [])
     if not all_entries:
-        print("No entries in backup.")
-        sys.exit(1)
+        raise UserFacingError("No entries in backup.")
 
     entries = [e for e in all_entries if key_filter is None or key_filter.lower() in e["key"].lower()]
     if not entries:
-        print(f"No keys matching '{key_filter}' in backup.")
-        print("Available keys:")
-        for e in all_entries:
-            print(f"  {e['key']}")
-        sys.exit(1)
+        available_keys = "\n".join(f"  {entry['key']}" for entry in all_entries)
+        message = f"No keys matching '{key_filter}' in backup."
+        if available_keys:
+            message += f"\nAvailable keys:\n{available_keys}"
+        raise UserFacingError(message)
 
     guard_vscode_closed()
 
     aes_key = get_aes_key()
     if aes_key is None:
-        print("ERROR: Cannot get AES key — cannot encrypt values.")
-        sys.exit(1)
+        raise UserFacingError("ERROR: Cannot get AES key — cannot encrypt values.")
 
     if create_safety_backup:
         create_prewrite_backup(include_db=True, note=f"before restore from {os.path.basename(backup_path)}")
@@ -557,7 +568,7 @@ def backup(out_path: str | None = None):
 
 
 ACCOUNTS_DIR = os.path.join(PROJECT_ROOT, "accounts")
-OAUTH_KEY = "openai-codex-oauth-credentials"
+OAUTH_KEY = oauth_refresh.OPENAI_CODEX_STORAGE_KEY
 KILO_AUTH_PATH = os.path.join(os.path.expanduser("~"), ".local", "share", "kilo", "auth.json")
 KILO_NEW_KEY = "kilo-new://openai"
 CODEX_AUTH_PATH = os.path.join(os.path.expanduser("~"), ".codex", "auth.json")
@@ -858,13 +869,13 @@ def read_current_accounts_for_ide(ide: str) -> dict[str, dict]:
 def _load_saved_account_data(name: str, expected_kind: str | None = None) -> tuple[str, dict, str]:
     try:
         return saved_store.load_saved_account(_accounts_dir(), name, CODEX_KEY, expected_kind)
-    except FileNotFoundError:
-        print(f"Account '{name}' not found.")
-        sys.exit(1)
+    except FileNotFoundError as exc:
+        raise AccountNotFoundError(f"Account '{name}' not found.") from exc
     except saved_store.SavedAccountKindMismatchError as exc:
         actual_kind = exc.actual_kind
-        print(f"Account '{name}' is a {actual_kind} account, expected {expected_kind}.")
-        sys.exit(1)
+        raise AccountKindMismatchError(
+            f"Account '{name}' has kind '{actual_kind}', expected '{expected_kind}'."
+        ) from exc
 
 
 def _saved_codex_entry(data: dict) -> dict | None:
@@ -934,8 +945,7 @@ def save_ide_account(name: str, ext: str | list[str] | tuple[str, ...] | None = 
     ext_names, ext_label = _normalize_ide_ext_selection(ext)
     entries = _read_current_ide_entries_for_selection(ext_names)
     if not entries:
-        print(f"No matching account entries found for {ext_label}.")
-        sys.exit(1)
+        raise UserFacingError(f"No matching account entries found for {ext_label}.")
 
     out = _write_account_file(name, "ide", ext_label, entries)
 
@@ -947,16 +957,43 @@ def save_codex_account(name: str):
     """Save current Codex auth.json as a named account."""
     value = _from_codex_format(_read_codex_auth())
     if not value.get("access_token") or not value.get("refresh_token"):
-        print("ERROR: Codex auth.json is missing access_token or refresh_token.")
-        sys.exit(1)
+        raise UserFacingError("ERROR: Codex auth.json is missing access_token or refresh_token.")
     if not value.get("id_token"):
-        print("ERROR: Codex auth.json requires id_token.")
-        sys.exit(1)
+        raise UserFacingError("ERROR: Codex auth.json requires id_token.")
 
     entry = {"key": CODEX_KEY, "value": value}
     out = _write_account_file(name, "codex", "codex", [entry])
     print(f"Account '{name}' saved [codex] ->{out}")
     _print_saved_entries([entry])
+
+
+def refresh_saved_account(name: str) -> str:
+    path, account_data, _kind = _load_saved_account_data(name)
+    entries = account_data.get("entries", []) if isinstance(account_data, dict) else []
+    if not isinstance(entries, list):
+        raise ValueError(f"Account '{name}' has an invalid entries payload.")
+
+    updated_data = dict(account_data)
+    try:
+        refreshed = oauth_refresh.refresh_saved_entries(entries)
+    except oauth_refresh.OAuthRefreshError as exc:
+        updated_data["refresh_status"] = "error"
+        updated_data["refresh_error"] = str(exc)
+        saved_store.write_saved_account_data(path, updated_data)
+        raise
+
+    updated_data["entries"] = refreshed.entries
+    updated_data["last_refreshed_at"] = refreshed.refreshed_at
+    updated_data["refresh_status"] = "ok"
+    updated_data.pop("refresh_error", None)
+    saved_store.write_saved_account_data(path, updated_data)
+
+    group_label = "group" if refreshed.refreshed_groups == 1 else "groups"
+    entry_label = "entry" if refreshed.refreshed_entries == 1 else "entries"
+    return (
+        f"Refreshed '{name}' "
+        f"({refreshed.refreshed_groups} token {group_label}, {refreshed.refreshed_entries} {entry_label})"
+    )
 
 
 def use_ide_account(
@@ -967,8 +1004,7 @@ def use_ide_account(
     """Apply a saved IDE-family account to DB slots and/or Kilo New."""
     _path, account_data, account_kind = _load_saved_account_data(name)
     if account_kind == "codex":
-        print(f"Account '{name}' is Codex-only and cannot be applied to IDE targets.")
-        sys.exit(1)
+        raise UserFacingError(f"Account '{name}' is Codex-only and cannot be applied to IDE targets.")
 
     ext_names, _ = _normalize_ide_ext_selection(ext)
 
@@ -976,8 +1012,7 @@ def use_ide_account(
     ide_entries = [entry for entry in entries if entry.get("key") != CODEX_KEY]
     source = next(iter(ide_entries), None)
     if not source:
-        print(f"No IDE entries in account '{name}'.")
-        sys.exit(1)
+        raise UserFacingError(f"No IDE entries in account '{name}'.")
 
     db_target_ids = [IDE_EXTENSIONS[target_name] for target_name in ext_names if target_name != "kilo-new"]
     source_db = next((entry for entry in ide_entries if entry.get("key") != KILO_NEW_KEY), None)
@@ -993,8 +1028,7 @@ def use_ide_account(
     running_kilo_new_ides = [ide for ide in IDE_PATHS if needs_kilo_write and is_ide_running(ide)]
     if running_kilo_new_ides and not allow_kilo_new_while_running:
         labels = ", ".join(IDE_PATHS[ide]["label"] for ide in running_kilo_new_ides)
-        print(f"ERROR: Kilo New may be active in running IDEs: {labels}. Close them before switching accounts.")
-        sys.exit(1)
+        raise UserFacingError(f"ERROR: Kilo New may be active in running IDEs: {labels}. Close them before switching accounts.")
     if running_kilo_new_ides and allow_kilo_new_while_running:
         labels = ", ".join(IDE_PATHS[ide]["label"] for ide in running_kilo_new_ides)
         print(f"WARNING: Writing shared Kilo New auth while IDEs are running ({labels}) (experimental).")
@@ -1017,8 +1051,7 @@ def use_ide_account(
                 continue
 
             if not generic_source:
-                print(f"No source entry available for '{ext_id}'.")
-                sys.exit(1)
+                raise UserFacingError(f"No source entry available for '{ext_id}'.")
 
             print(f"[cross-ext] No '{ext_id}' key — remapping from: {generic_source['key']}")
             remapped_entries.append({"key": entry_key, "value": generic_source["value"]})
@@ -1040,8 +1073,7 @@ def use_ide_account(
 
     source_entry = source_kilo_new or generic_source
     if not source_entry:
-        print("No source entry available for 'kilo-new'.")
-        sys.exit(1)
+        raise UserFacingError("No source entry available for 'kilo-new'.")
 
     new_entry = _to_kilo_new_format(source_entry["value"])
     kilo_auth = _read_kilo_auth()
@@ -1056,17 +1088,15 @@ def use_codex_account(name: str):
     _path, account_data, _kind = _load_saved_account_data(name, expected_kind="codex")
     source_entry = _saved_codex_entry(account_data)
     if not source_entry:
-        print(f"Account '{name}' does not contain a Codex entry.")
-        sys.exit(1)
+        raise UserFacingError(f"Account '{name}' does not contain a Codex entry.")
 
     create_prewrite_backup(include_codex=True, note=f"before applying Codex account '{name}'")
     print()
 
     try:
         codex_auth = _to_codex_format(source_entry["value"], _read_codex_auth())
-    except ValueError as e:
-        print(f"ERROR: {e}")
-        sys.exit(1)
+    except ValueError as exc:
+        raise UserFacingError(f"ERROR: {exc}") from exc
 
     _write_codex_auth(codex_auth)
     print(f"[codex] Written to {CODEX_AUTH_PATH}")
@@ -1076,8 +1106,7 @@ def use_codex_account(name: str):
 def import_codex_account(auth_path: str, name: str):
     """Import tokens from a Codex auth.json and save as a Codex account."""
     if not os.path.exists(auth_path):
-        print(f"File not found: {auth_path}")
-        sys.exit(1)
+        raise UserFacingError(f"File not found: {auth_path}")
 
     with open(auth_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -1089,16 +1118,13 @@ def import_codex_account(auth_path: str, name: str):
     expires_ms = value.get("expires", 0)
 
     if not access_token or not refresh_token:
-        print("ERROR: access_token or refresh_token missing in auth.json")
-        sys.exit(1)
+        raise UserFacingError("ERROR: access_token or refresh_token missing in auth.json")
 
     if not expires_ms:
-        print("ERROR: could not decode access token expiry from auth.json")
-        sys.exit(1)
+        raise UserFacingError("ERROR: could not decode access token expiry from auth.json")
 
     if not value.get("id_token"):
-        print("ERROR: Codex import requires id_token in auth.json.")
-        sys.exit(1)
+        raise UserFacingError("ERROR: Codex import requires id_token in auth.json.")
 
     entry = {"key": CODEX_KEY, "value": value}
     out = _write_account_file(name, "codex", "codex", [entry])

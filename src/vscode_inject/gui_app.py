@@ -5,6 +5,7 @@ Run: python main.py
 
 import queue
 import threading
+import traceback
 import tkinter as tk
 from tkinter import ttk
 
@@ -31,6 +32,29 @@ def poll_ide_runtime_state(root, notebook, ide_tab, interval_ms=POLL_INTERVAL_MS
     root.after(interval_ms, poll_ide_runtime_state, root, notebook, ide_tab, interval_ms)
 
 
+def execute_guarded_call(fn, *args, success_msg=None):
+    """Run a backend call and normalize the status payload for the GUI."""
+    ok = True
+    message = success_msg
+    try:
+        result = fn(*args)
+        if message is None and isinstance(result, str):
+            message = result
+    except SystemExit as exc:
+        ok = False
+        message = f"Aborted (code {exc.code})"
+        print(message)
+    except db.UserFacingError as exc:
+        ok = False
+        message = str(exc)
+        print(message)
+    except Exception as exc:
+        ok = False
+        message = str(exc)
+        traceback.print_exc()
+    return message, ok
+
+
 def main():
     ui_queue = queue.Queue()
     root = tk.Tk()
@@ -49,19 +73,7 @@ def main():
         """Run fn in a worker thread and refresh UI on completion."""
 
         def _run():
-            ok = True
-            message = success_msg
-            try:
-                result = fn(*args)
-                if message is None and isinstance(result, str):
-                    message = result
-            except SystemExit as exc:
-                ok = False
-                message = f"Aborted (code {exc.code})"
-            except Exception as exc:
-                ok = False
-                message = str(exc)
-            ui_queue.put((message, ok))
+            ui_queue.put(execute_guarded_call(fn, *args, success_msg=success_msg))
 
         threading.Thread(target=_run, daemon=True).start()
 

@@ -26,8 +26,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from vscode_inject import parse_vscdb as db
-from vscode_inject.gui_app import POLL_INTERVAL_MS, poll_ide_runtime_state
-from vscode_inject.gui_tabs import GuiServices, IdeAccountsTab
+from vscode_inject.gui_app import POLL_INTERVAL_MS, execute_guarded_call, poll_ide_runtime_state
+from vscode_inject.gui_tabs import CodexTab, GuiServices, IdeAccountsTab
 
 
 def create_state_db(path: Path, rows: list[tuple[str, object]]) -> None:
@@ -75,13 +75,6 @@ class ParseVscdbTests(unittest.TestCase):
     def write_file(self, path: Path, content: str = "stub") -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-
-    def capture_exit(self, fn, *args, **kwargs) -> tuple[object, str]:
-        output = io.StringIO()
-        with redirect_stdout(output):
-            with self.assertRaises(SystemExit) as exc:
-                fn(*args, **kwargs)
-        return exc.exception.code, output.getvalue()
 
     def capture_output(self, fn, *args, **kwargs) -> str:
         output = io.StringIO()
@@ -520,7 +513,7 @@ class ParseVscdbTests(unittest.TestCase):
         )
         self.assertEqual(rows["workbench.colorTheme"], "Solarized Dark")
 
-    def test_restore_exits_when_aes_key_is_unavailable(self):
+    def test_restore_raises_user_error_when_aes_key_is_unavailable(self):
         db_path = self.root / "restore_no_key.vscdb"
         create_state_db(db_path, [])
         backup_path = self.root / "restore_no_key.json"
@@ -545,12 +538,10 @@ class ParseVscdbTests(unittest.TestCase):
         self.patch_db("guard_vscode_closed", lambda: None)
         self.patch_db("get_aes_key", lambda local_state_path=None: None)
 
-        code, output = self.capture_exit(db.restore, str(backup_path), create_safety_backup=False)
+        with self.assertRaisesRegex(db.UserFacingError, "ERROR: Cannot get AES key"):
+            db.restore(str(backup_path), create_safety_backup=False)
 
-        self.assertEqual(code, 1)
-        self.assertIn("ERROR: Cannot get AES key", output)
-
-    def test_restore_exits_when_key_filter_matches_nothing(self):
+    def test_restore_raises_user_error_when_key_filter_matches_nothing(self):
         db_path = self.root / "restore_filter.vscdb"
         create_state_db(db_path, [])
         backup_path = self.root / "restore_filter.json"
@@ -560,11 +551,11 @@ class ParseVscdbTests(unittest.TestCase):
         )
         self.patch_db("DB_PATH", str(db_path))
 
-        code, output = self.capture_exit(db.restore, str(backup_path), key_filter="secret://")
+        with self.assertRaises(db.UserFacingError) as exc:
+            db.restore(str(backup_path), key_filter="secret://")
 
-        self.assertEqual(code, 1)
-        self.assertIn("No keys matching 'secret://' in backup.", output)
-        self.assertIn("workbench.colorTheme", output)
+        self.assertIn("No keys matching 'secret://' in backup.", str(exc.exception))
+        self.assertIn("workbench.colorTheme", str(exc.exception))
 
     def test_backup_writes_manifest_with_required_and_optional_targets(self):
         vscode_db = self.root / "vscode" / "state.vscdb"
@@ -717,7 +708,7 @@ class ParseVscdbTests(unittest.TestCase):
         self.assertEqual(entry["value"]["id_token"], "id-codex")
         self.assertIn("Account 'codex_alice' saved [codex]", output)
 
-    def test_save_codex_account_exits_without_id_token(self):
+    def test_save_codex_account_raises_user_error_without_id_token(self):
         codex_auth_path = self.root / "codex" / "auth.json"
         self.write_json(
             codex_auth_path,
@@ -732,10 +723,8 @@ class ParseVscdbTests(unittest.TestCase):
         )
         self.patch_db("CODEX_AUTH_PATH", str(codex_auth_path))
 
-        code, output = self.capture_exit(db.save_codex_account, "codex_alice")
-
-        self.assertEqual(code, 1)
-        self.assertIn("ERROR: Codex auth.json requires id_token.", output)
+        with self.assertRaisesRegex(db.UserFacingError, "ERROR: Codex auth.json requires id_token."):
+            db.save_codex_account("codex_alice")
 
     def test_import_codex_account_writes_saved_account_file(self):
         accounts_dir = self.root / "accounts"
@@ -769,13 +758,11 @@ class ParseVscdbTests(unittest.TestCase):
         self.assertIn("Imported 'imported_codex' [codex]", output)
         self.assertIn("acct-import", output)
 
-    def test_import_codex_account_exits_when_source_file_is_missing(self):
+    def test_import_codex_account_raises_user_error_when_source_file_is_missing(self):
         missing_path = self.root / "missing" / "auth.json"
 
-        code, output = self.capture_exit(db.import_codex_account, str(missing_path), "imported_codex")
-
-        self.assertEqual(code, 1)
-        self.assertIn(f"File not found: {missing_path}", output)
+        with self.assertRaisesRegex(db.UserFacingError, rf"File not found: .*{missing_path.name}"):
+            db.import_codex_account(str(missing_path), "imported_codex")
 
     def test_use_ide_account_remaps_missing_extension_before_restore(self):
         source_value = {
@@ -853,11 +840,32 @@ class ParseVscdbTests(unittest.TestCase):
         )
         self.patch_db("is_ide_running", lambda ide=None: ide == "vscode")
 
-        code, output = self.capture_exit(db.use_ide_account, "alice", "kilo-new")
+        with self.assertRaises(db.UserFacingError) as exc:
+            db.use_ide_account("alice", "kilo-new")
 
-        self.assertEqual(code, 1)
-        self.assertIn("Kilo New may be active in running IDEs", output)
-        self.assertIn("VSCode", output)
+        self.assertIn("Kilo New may be active in running IDEs", str(exc.exception))
+        self.assertIn("VSCode", str(exc.exception))
+
+    def test_load_saved_account_data_raises_account_not_found_error(self):
+        self.patch_db("ACCOUNTS_DIR", str(self.root / "accounts"))
+
+        with self.assertRaisesRegex(db.AccountNotFoundError, "Account 'alice' not found."):
+            db._load_saved_account_data("alice")
+
+    def test_load_saved_account_data_raises_account_kind_mismatch_error(self):
+        accounts_dir = self.root / "accounts"
+        self.patch_db("ACCOUNTS_DIR", str(accounts_dir))
+        self.write_json(
+            accounts_dir / "alice.json",
+            {
+                "name": "alice",
+                "kind": "ide",
+                "entries": [{"key": db.KILO_NEW_KEY, "value": {"refresh_token": "refresh-1"}}],
+            },
+        )
+
+        with self.assertRaisesRegex(db.AccountKindMismatchError, "Account 'alice' has kind 'ide', expected 'codex'."):
+            db._load_saved_account_data("alice", expected_kind="codex")
 
     def test_use_ide_account_allows_kilo_new_when_running_with_experimental_flag(self):
         source_value = {
@@ -1085,6 +1093,131 @@ class ParseVscdbTests(unittest.TestCase):
             [{"tokens": {"account_id": "acct-codex"}, "auth_mode": "chatgpt"}],
         )
 
+    def test_refresh_saved_account_updates_entries_and_metadata(self):
+        account_data = {
+            "name": "alice",
+            "kind": "ide",
+            "saved_at": "2026-05-15T10:00:00",
+            "entries": [
+                {
+                    "key": db.KILO_NEW_KEY,
+                    "value": {
+                        "access_token": "old-access",
+                        "refresh_token": "refresh-1",
+                        "expires": 111,
+                        "accountId": "acct-1",
+                    },
+                }
+            ],
+        }
+        refreshed_entries = [
+            {
+                "key": db.KILO_NEW_KEY,
+                "value": {
+                    "access_token": "new-access",
+                    "refresh_token": "refresh-2",
+                    "expires": 222,
+                    "accountId": "acct-1",
+                },
+            }
+        ]
+        write_calls: list[tuple[str, dict]] = []
+
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: ("alice.json", account_data, "ide"),
+        )
+        with patch.object(
+            db.oauth_refresh,
+            "refresh_saved_entries",
+            return_value=db.oauth_refresh.RefreshEntriesResult(
+                entries=refreshed_entries,
+                refreshed_entries=1,
+                refreshed_groups=1,
+                refreshed_at="2026-05-15T12:34:56Z",
+            ),
+        ) as refresh_saved_entries, patch.object(
+            db.saved_store,
+            "write_saved_account_data",
+            side_effect=lambda path, data: write_calls.append((path, data)),
+        ):
+            message = db.refresh_saved_account("alice")
+
+        refresh_saved_entries.assert_called_once_with(account_data["entries"])
+        self.assertEqual(message, "Refreshed 'alice' (1 token group, 1 entry)")
+        self.assertEqual(
+            write_calls,
+            [
+                (
+                    "alice.json",
+                    {
+                        "name": "alice",
+                        "kind": "ide",
+                        "saved_at": "2026-05-15T10:00:00",
+                        "entries": refreshed_entries,
+                        "last_refreshed_at": "2026-05-15T12:34:56Z",
+                        "refresh_status": "ok",
+                    },
+                )
+            ],
+        )
+
+    def test_refresh_saved_account_persists_error_status_and_reraises(self):
+        account_data = {
+            "name": "alice",
+            "kind": "ide",
+            "saved_at": "2026-05-15T10:00:00",
+            "entries": [
+                {
+                    "key": db.KILO_NEW_KEY,
+                    "value": {
+                        "access_token": "old-access",
+                        "refresh_token": "refresh-1",
+                        "expires": 111,
+                        "accountId": "acct-1",
+                    },
+                }
+            ],
+            "last_refreshed_at": "2026-05-15T11:11:11Z",
+            "refresh_status": "ok",
+        }
+        write_calls: list[tuple[str, dict]] = []
+
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: ("alice.json", account_data, "ide"),
+        )
+        with patch.object(
+            db.oauth_refresh,
+            "refresh_saved_entries",
+            side_effect=db.oauth_refresh.TokenExchangeError("Token refresh failed: 400 invalid_grant"),
+        ) as refresh_saved_entries, patch.object(
+            db.saved_store,
+            "write_saved_account_data",
+            side_effect=lambda path, data: write_calls.append((path, data)),
+        ):
+            with self.assertRaisesRegex(db.oauth_refresh.TokenExchangeError, "invalid_grant"):
+                db.refresh_saved_account("alice")
+
+        refresh_saved_entries.assert_called_once_with(account_data["entries"])
+        self.assertEqual(
+            write_calls,
+            [
+                (
+                    "alice.json",
+                    {
+                        "name": "alice",
+                        "kind": "ide",
+                        "saved_at": "2026-05-15T10:00:00",
+                        "entries": account_data["entries"],
+                        "last_refreshed_at": "2026-05-15T11:11:11Z",
+                        "refresh_status": "error",
+                        "refresh_error": "Token refresh failed: 400 invalid_grant",
+                    },
+                )
+            ],
+        )
+
 
 class IdeAccountsTabTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1106,6 +1239,7 @@ class IdeAccountsTabTests(unittest.TestCase):
             "kilo-new": "kilo-new://openai",
         }
         use_ide_account = Mock(name="use_ide_account")
+        refresh_saved_account = Mock(name="refresh_saved_account")
 
         return SimpleNamespace(
             IDE_EXTENSIONS=ide_extensions,
@@ -1124,6 +1258,7 @@ class IdeAccountsTabTests(unittest.TestCase):
             is_ide_running=lambda ide=None: running_state[ide or "vscode"],
             set_ide=lambda name: None,
             use_ide_account=use_ide_account,
+            refresh_saved_account=refresh_saved_account,
             launch_ide=lambda ide=None: f"Started {ide or 'vscode'}",
         )
 
@@ -1249,8 +1384,78 @@ class IdeAccountsTabTests(unittest.TestCase):
         showerror.assert_called_once()
         services.run_guarded.assert_not_called()
 
+    def test_on_refresh_selected_runs_saved_account_refresh_for_ide_tab(self):
+        db_module = self.make_db(running=False)
+        services = self.make_services(db_module)
+        services.run_guarded = Mock()
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, services)
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
+            tab.on_refresh_selected()
+
+        services.run_guarded.assert_called_once_with(db_module.refresh_saved_account, "alice")
+
+
+class CodexTabTests(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(str(exc))
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+
+    def make_services(self, db_module):
+        return GuiServices(
+            root=self.root,
+            db=db_module,
+            bg="#1e1e2e",
+            fg="#cdd6f4",
+            btn_bg="#313244",
+            btn_act="#45475a",
+            sel_fg="#1e1e2e",
+            run_guarded=Mock(),
+            set_status=lambda *args, **kwargs: None,
+        )
+
+    def test_on_refresh_selected_runs_saved_account_refresh_for_codex_tab(self):
+        db_module = SimpleNamespace(
+            CODEX_AUTH_PATH="C:/Users/Test/.codex/auth.json",
+            CODEX_KEY="codex://openai",
+            read_current_codex_account=lambda: {},
+            list_saved_accounts=lambda kind: [],
+            account_fingerprint=lambda value: None,
+            refresh_saved_account=Mock(name="refresh_saved_account"),
+        )
+        services = self.make_services(db_module)
+        notebook = ttk.Notebook(self.root)
+        tab = CodexTab(notebook, services)
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
+            tab.on_refresh_selected()
+
+        services.run_guarded.assert_called_once_with(db_module.refresh_saved_account, "alice")
+
 
 class GuiAppPollingTests(unittest.TestCase):
+    def test_execute_guarded_call_surfaces_backend_exception_message_and_prints_it(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            message, ok = execute_guarded_call(lambda: (_ for _ in ()).throw(db.UserFacingError("Specific backend error")))
+
+        self.assertFalse(ok)
+        self.assertEqual(message, "Specific backend error")
+        self.assertIn("Specific backend error", output.getvalue())
+
+    def test_execute_guarded_call_prints_traceback_for_unexpected_exception(self):
+        with patch("vscode_inject.gui_app.traceback.print_exc") as print_exc:
+            message, ok = execute_guarded_call(lambda: (_ for _ in ()).throw(RuntimeError("Unexpected failure")))
+
+        self.assertFalse(ok)
+        self.assertEqual(message, "Unexpected failure")
+        print_exc.assert_called_once_with()
+
     def test_poll_ide_runtime_state_runs_only_for_active_ide_tab(self):
         root = Mock()
         notebook = Mock()

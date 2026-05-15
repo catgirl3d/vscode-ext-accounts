@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import tempfile
 
 
 class SavedAccountKindMismatchError(ValueError):
@@ -12,6 +13,24 @@ class SavedAccountKindMismatchError(ValueError):
 def ensure_accounts_dir(accounts_dir: str) -> str:
     os.makedirs(accounts_dir, exist_ok=True)
     return accounts_dir
+
+
+def write_saved_account_data(path: str, data: dict) -> None:
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    fd, tmp_path = tempfile.mkstemp(prefix=".account-", suffix=".json", dir=directory or None)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def saved_account_kind(data: dict, codex_key: str) -> str:
@@ -93,17 +112,14 @@ def write_account_file(
                 f"Account '{name}' already exists as {existing_kind}. Use a different name for the {kind} account."
             )
 
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "name": name,
-                "kind": kind,
-                "ext": ext_label,
-                "saved_at": datetime.datetime.now().isoformat(),
-                "entries": entries,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
+    write_saved_account_data(
+        out,
+        {
+            "name": name,
+            "kind": kind,
+            "ext": ext_label,
+            "saved_at": datetime.datetime.now().isoformat(),
+            "entries": entries,
+        },
+    )
     return out
