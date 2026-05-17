@@ -210,6 +210,28 @@ class ParseVscdbTests(unittest.TestCase):
 
         self.assertEqual(db.resolve_ide_executable_path("vscode"), str(path_exe))
 
+    def test_resolve_ide_executable_path_accepts_iterable_launch_config_values(self):
+        path_exe = self.root / "iterable" / "Code.exe"
+        self.write_file(path_exe)
+
+        self.patch_db(
+            "IDE_PATHS",
+            {
+                "vscode": {
+                    "label": "VSCode",
+                    "db": "db-vscode",
+                    "local_state": "local-vscode",
+                    "process": "Code.exe",
+                    "launch_commands": {"code"},
+                    "launch_paths": {str(path_exe)},
+                }
+            },
+        )
+        self.patch_db("_windows_app_path_candidates", lambda exe_name: [])
+        self.patch_db("_path_command_candidates", lambda command_names: [])
+
+        self.assertEqual(db.resolve_ide_executable_path("vscode"), str(path_exe))
+
     def test_launch_ide_starts_resolved_executable(self):
         exe_path = str(self.root / "launch" / "Code.exe")
 
@@ -551,6 +573,39 @@ class ParseVscdbTests(unittest.TestCase):
         with self.assertRaisesRegex(db.UserFacingError, "ERROR: Cannot get AES key"):
             db.restore(str(backup_path), create_safety_backup=False)
 
+    def test_restore_checks_aes_key_before_creating_safety_backup(self):
+        db_path = self.root / "restore_no_key_default.vscdb"
+        create_state_db(db_path, [])
+        backup_path = self.root / "restore_no_key_default.json"
+        self.write_json(
+            backup_path,
+            {"entries": [{"key": oauth_key("kilocode.kilo-code"), "value": {"refresh_token": "r"}}]},
+        )
+
+        backup_calls: list[dict[str, object]] = []
+
+        self.patch_db("DB_PATH", str(db_path))
+        self.patch_db("CURRENT_IDE", "vscode")
+        self.patch_db(
+            "IDE_PATHS",
+            {
+                "vscode": {
+                    "label": "VSCode",
+                    "db": str(db_path),
+                    "local_state": str(self.root / "Local State"),
+                    "process": "Code.exe",
+                }
+            },
+        )
+        self.patch_db("guard_vscode_closed", lambda: None)
+        self.patch_db("get_aes_key", lambda local_state_path=None: None)
+        self.patch_db("create_prewrite_backup", lambda **kwargs: backup_calls.append(kwargs))
+
+        with self.assertRaisesRegex(db.UserFacingError, "ERROR: Cannot get AES key"):
+            db.restore(str(backup_path))
+
+        self.assertEqual(backup_calls, [])
+
     def test_restore_raises_user_error_when_key_filter_matches_nothing(self):
         db_path = self.root / "restore_filter.vscdb"
         create_state_db(db_path, [])
@@ -718,6 +773,33 @@ class ParseVscdbTests(unittest.TestCase):
         self.assertEqual(entry["value"]["id_token"], "id-codex")
         self.assertIn("Account 'codex_alice' saved [codex]", output)
 
+    def test_save_codex_account_uses_facade_codex_key_contract(self):
+        accounts_dir = self.root / "accounts"
+        codex_auth_path = self.root / "codex" / "auth.json"
+        custom_codex_key = "codex://custom"
+        self.write_json(
+            codex_auth_path,
+            {
+                "tokens": {
+                    "access_token": "access-codex",
+                    "refresh_token": "refresh-codex",
+                    "account_id": "acct-codex",
+                    "id_token": "id-codex",
+                },
+                "expires": 1711111111000,
+            },
+        )
+
+        self.patch_db("ACCOUNTS_DIR", str(accounts_dir))
+        self.patch_db("CODEX_AUTH_PATH", str(codex_auth_path))
+        self.patch_db("CODEX_KEY", custom_codex_key)
+
+        self.capture_output(db.save_codex_account, "codex_alice")
+
+        saved_path = accounts_dir / "codex_alice.json"
+        saved_data = json.loads(saved_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved_data["entries"][0]["key"], custom_codex_key)
+
     def test_save_codex_account_raises_user_error_without_id_token(self):
         codex_auth_path = self.root / "codex" / "auth.json"
         self.write_json(
@@ -768,13 +850,49 @@ class ParseVscdbTests(unittest.TestCase):
         self.assertIn("Imported 'imported_codex' [codex]", output)
         self.assertIn("acct-import", output)
 
+    def test_import_codex_account_uses_facade_codex_key_contract(self):
+        accounts_dir = self.root / "accounts"
+        import_auth_path = self.root / "import" / "auth.json"
+        custom_codex_key = "codex://custom"
+        self.write_json(
+            import_auth_path,
+            {
+                "tokens": {
+                    "access_token": "access-import",
+                    "refresh_token": "refresh-import",
+                    "account_id": "acct-import",
+                    "id_token": "id-import",
+                },
+                "expires": 1712222222000,
+            },
+        )
+
+        self.patch_db("ACCOUNTS_DIR", str(accounts_dir))
+        self.patch_db("CODEX_KEY", custom_codex_key)
+
+        self.capture_output(db.import_codex_account, str(import_auth_path), "imported_codex")
+
+        saved_path = accounts_dir / "imported_codex.json"
+        saved_data = json.loads(saved_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved_data["entries"][0]["key"], custom_codex_key)
+
     def test_import_codex_account_raises_user_error_when_source_file_is_missing(self):
         missing_path = self.root / "missing" / "auth.json"
 
         with self.assertRaisesRegex(db.UserFacingError, rf"File not found: .*{missing_path.name}"):
             db.import_codex_account(str(missing_path), "imported_codex")
 
-    def test_use_ide_account_remaps_missing_extension_before_restore(self):
+    def test_import_codex_account_raises_user_error_when_auth_json_is_invalid(self):
+        invalid_auth_path = self.root / "import" / "invalid_auth.json"
+        invalid_auth_path.parent.mkdir(parents=True, exist_ok=True)
+        invalid_auth_path.write_text("{invalid-json", encoding="utf-8")
+
+        with self.assertRaisesRegex(db.UserFacingError, "ERROR: invalid auth.json"):
+            db.import_codex_account(str(invalid_auth_path), "imported_codex")
+
+    def test_use_ide_account_remaps_missing_extension_before_direct_db_write(self):
+        db_path = self.root / "use_ide_account_remap.vscdb"
+        create_state_db(db_path, [])
         source_value = {
             "accountId": "acct-remap",
             "refresh_token": "refresh-remap",
@@ -789,13 +907,13 @@ class ParseVscdbTests(unittest.TestCase):
             ]
         }
 
-        restore_call: dict[str, object] = {}
+        write_call: dict[str, object] = {}
         backup_calls: list[dict[str, object]] = []
 
-        def fake_restore(path: str, create_safety_backup: bool = True):
-            with open(path, "r", encoding="utf-8") as fh:
-                restore_call["payload"] = json.load(fh)
-            restore_call["create_safety_backup"] = create_safety_backup
+        def fake_write_entries(entries: list[dict], *, aes_key=None) -> tuple[int, int]:
+            write_call["entries"] = entries
+            write_call["aes_key"] = aes_key
+            return len(entries), 0
 
         def fake_create_prewrite_backup(**kwargs):
             backup_calls.append(kwargs)
@@ -804,9 +922,11 @@ class ParseVscdbTests(unittest.TestCase):
             "_load_saved_account_data",
             lambda name, expected_kind=None: ("account.json", account_data, "ide"),
         )
+        self.patch_db("DB_PATH", str(db_path))
         self.patch_db("create_prewrite_backup", fake_create_prewrite_backup)
-        self.patch_db("restore", fake_restore)
+        self.patch_db("_write_entries_to_current_db", fake_write_entries)
         self.patch_db("guard_vscode_closed", lambda: None)
+        self.patch_db("get_aes_key", lambda local_state_path=None: b"aes-key")
         self.patch_db("is_ide_running", lambda ide=None: False)
 
         db.use_ide_account("alice", "roo-cline")
@@ -815,10 +935,8 @@ class ParseVscdbTests(unittest.TestCase):
             backup_calls,
             [{"include_db": True, "include_kilo": False, "note": "before applying IDE account 'alice'"}],
         )
-        self.assertFalse(restore_call["create_safety_backup"])
-        payload = cast(dict[str, object], restore_call["payload"])
         self.assertEqual(
-            payload["entries"],
+            write_call["entries"],
             [
                 {
                     "key": db._entry_key_for_ext(db.IDE_EXTENSIONS["roo-cline"]),
@@ -826,6 +944,167 @@ class ParseVscdbTests(unittest.TestCase):
                 }
             ],
         )
+        self.assertEqual(write_call["aes_key"], b"aes-key")
+
+    def test_use_ide_account_preserves_restore_style_progress_output(self):
+        db_path = self.root / "use_ide_account_output.vscdb"
+        create_state_db(db_path, [])
+        source_value = {
+            "accountId": "acct-remap",
+            "refresh_token": "refresh-remap",
+            "expires": 555,
+        }
+        account_data = {
+            "entries": [
+                {
+                    "key": db._entry_key_for_ext(db.IDE_EXTENSIONS["kilocode"]),
+                    "value": source_value,
+                }
+            ]
+        }
+
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: ("account.json", account_data, "ide"),
+        )
+        self.patch_db("DB_PATH", str(db_path))
+        self.patch_db("create_prewrite_backup", lambda **kwargs: None)
+        self.patch_db("guard_vscode_closed", lambda: None)
+        self.patch_db("is_ide_running", lambda ide=None: False)
+        self.patch_db("get_aes_key", lambda local_state_path=None: b"aes-key")
+        self.patch_db("_write_entries_to_current_db", lambda entries, *, aes_key=None: (len(entries), 0))
+
+        output = self.capture_output(db.use_ide_account, "alice", "roo-cline")
+
+        self.assertRegex(output, r"Backup: .+\.json")
+        self.assertIn("Entries to restore: 1", output)
+        self.assertIn("Restored: 1  Skipped: 0", output)
+        self.assertIn("Done. Start", output)
+
+    def test_use_ide_account_non_string_target_does_not_succeed_with_zero_entries(self):
+        db_path = self.root / "use_ide_account_non_string_target.vscdb"
+        create_state_db(db_path, [])
+        source_value = {
+            "accountId": "acct-remap",
+            "refresh_token": "refresh-remap",
+            "expires": 555,
+        }
+        account_data = {
+            "entries": [
+                {
+                    "key": db._entry_key_for_ext(db.IDE_EXTENSIONS["kilocode"]),
+                    "value": source_value,
+                }
+            ]
+        }
+        write_call: dict[str, object] = {}
+
+        def fake_write_entries(entries: list[dict], *, aes_key=None) -> tuple[int, int]:
+            write_call["entries"] = entries
+            return len(entries), 0
+
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: ("account.json", account_data, "ide"),
+        )
+        self.patch_db("DB_PATH", str(db_path))
+        self.patch_db(
+            "IDE_EXTENSIONS",
+            {
+                "both": None,
+                "kilocode": "kilocode.kilo-code",
+                "roo-cline": 123,
+                "kilo-new": db.KILO_NEW_KEY,
+            },
+        )
+        self.patch_db("create_prewrite_backup", lambda **kwargs: None)
+        self.patch_db("_write_entries_to_current_db", fake_write_entries)
+        self.patch_db("guard_vscode_closed", lambda: None)
+        self.patch_db("get_aes_key", lambda local_state_path=None: b"aes-key")
+        self.patch_db("is_ide_running", lambda ide=None: False)
+
+        output = self.capture_output(db.use_ide_account, "alice", "roo-cline")
+
+        self.assertEqual(
+            write_call["entries"],
+            [
+                {
+                    "key": 'secret://{"extensionId":"123","key":"openai-codex-oauth-credentials"}',
+                    "value": source_value,
+                }
+            ],
+        )
+        self.assertIn("Entries to restore: 1", output)
+        self.assertIn("Restored: 1  Skipped: 0", output)
+
+    def test_use_ide_account_rechecks_current_ide_before_db_write(self):
+        db_path = self.root / "use_ide_account_recheck.vscdb"
+        create_state_db(db_path, [])
+        source_value = {
+            "accountId": "acct-remap",
+            "refresh_token": "refresh-remap",
+            "expires": 555,
+        }
+        account_data = {
+            "entries": [
+                {
+                    "key": db._entry_key_for_ext(db.IDE_EXTENSIONS["kilocode"]),
+                    "value": source_value,
+                }
+            ]
+        }
+        guard_calls: list[str] = []
+
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: ("account.json", account_data, "ide"),
+        )
+        self.patch_db("DB_PATH", str(db_path))
+        self.patch_db("create_prewrite_backup", lambda **kwargs: None)
+        self.patch_db("guard_vscode_closed", lambda: guard_calls.append("guard"))
+        self.patch_db("get_aes_key", lambda local_state_path=None: b"aes-key")
+        self.patch_db("is_ide_running", lambda ide=None: False)
+        self.patch_db("_write_entries_to_current_db", lambda entries, *, aes_key=None: (len(entries), 0))
+
+        self.capture_output(db.use_ide_account, "alice", "roo-cline")
+
+        self.assertEqual(guard_calls, ["guard", "guard"])
+
+    def test_use_ide_account_does_not_print_restore_progress_before_aes_key_failure(self):
+        db_path = self.root / "use_ide_account_no_key.vscdb"
+        create_state_db(db_path, [])
+        source_value = {
+            "accountId": "acct-remap",
+            "refresh_token": "refresh-remap",
+            "expires": 555,
+        }
+        account_data = {
+            "entries": [
+                {
+                    "key": db._entry_key_for_ext(db.IDE_EXTENSIONS["kilocode"]),
+                    "value": source_value,
+                }
+            ]
+        }
+
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: ("account.json", account_data, "ide"),
+        )
+        self.patch_db("DB_PATH", str(db_path))
+        self.patch_db("create_prewrite_backup", lambda **kwargs: None)
+        self.patch_db("guard_vscode_closed", lambda: None)
+        self.patch_db("get_aes_key", lambda local_state_path=None: None)
+        self.patch_db("is_ide_running", lambda ide=None: False)
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            with self.assertRaisesRegex(db.UserFacingError, "ERROR: Cannot get AES key"):
+                db.use_ide_account("alice", "roo-cline")
+
+        self.assertNotIn("Backup:", output.getvalue())
+        self.assertNotIn("Entries to restore:", output.getvalue())
+        self.assertNotIn("Target DB:", output.getvalue())
 
     def test_use_ide_account_rejects_kilo_new_when_any_supported_ide_is_running(self):
         account_data = {
@@ -985,6 +1264,8 @@ class ParseVscdbTests(unittest.TestCase):
         )
 
     def test_use_ide_account_prefers_explicit_kilo_new_entry_when_present(self):
+        db_path = self.root / "use_ide_account_explicit_kilo.vscdb"
+        create_state_db(db_path, [])
         db_source = {
             "accountId": "acct-db",
             "refresh_token": "refresh-db",
@@ -1008,22 +1289,24 @@ class ParseVscdbTests(unittest.TestCase):
             ]
         }
 
-        restore_call: dict[str, object] = {}
+        write_call: dict[str, object] = {}
         written_auth: list[dict] = []
         backup_calls: list[dict[str, object]] = []
 
-        def fake_restore(path: str, create_safety_backup: bool = True):
-            with open(path, "r", encoding="utf-8") as fh:
-                restore_call["payload"] = json.load(fh)
-            restore_call["create_safety_backup"] = create_safety_backup
+        def fake_write_entries(entries: list[dict], *, aes_key=None) -> tuple[int, int]:
+            write_call["entries"] = entries
+            write_call["aes_key"] = aes_key
+            return len(entries), 0
 
         self.patch_db(
             "_load_saved_account_data",
             lambda name, expected_kind=None: ("account.json", account_data, "ide"),
         )
+        self.patch_db("DB_PATH", str(db_path))
         self.patch_db("create_prewrite_backup", lambda **kwargs: backup_calls.append(kwargs))
-        self.patch_db("restore", fake_restore)
+        self.patch_db("_write_entries_to_current_db", fake_write_entries)
         self.patch_db("guard_vscode_closed", lambda: None)
+        self.patch_db("get_aes_key", lambda local_state_path=None: b"aes-key")
         self.patch_db("is_ide_running", lambda ide=None: False)
         self.patch_db("_read_kilo_auth", lambda: {})
         self.patch_db("_write_kilo_auth", lambda data: written_auth.append(data))
@@ -1034,10 +1317,8 @@ class ParseVscdbTests(unittest.TestCase):
             backup_calls,
             [{"include_db": True, "include_kilo": True, "note": "before applying IDE account 'alice'"}],
         )
-        self.assertFalse(restore_call["create_safety_backup"])
-        payload = cast(dict[str, object], restore_call["payload"])
         self.assertEqual(
-            payload["entries"],
+            write_call["entries"],
             [
                 {
                     "key": db._entry_key_for_ext(db.IDE_EXTENSIONS["roo-cline"]),
@@ -1045,6 +1326,7 @@ class ParseVscdbTests(unittest.TestCase):
                 }
             ],
         )
+        self.assertEqual(write_call["aes_key"], b"aes-key")
         self.assertEqual(
             written_auth,
             [
