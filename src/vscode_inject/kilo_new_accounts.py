@@ -40,7 +40,11 @@ def from_kilo_new_format(value: dict) -> dict:
 
 def get_kilo_new_fingerprint(auth_path: str) -> str | None:
     auth = read_kilo_auth(auth_path)
-    refresh = auth.get("openai", {}).get("refresh")
+    openai_entry = auth.get("openai")
+    if not isinstance(openai_entry, dict):
+        return None
+
+    refresh = openai_entry.get("refresh")
     if not refresh:
         return None
     return hashlib.sha256(str(refresh).encode("utf-8")).hexdigest()
