@@ -5,8 +5,10 @@ import contextlib
 import ctypes
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
+import runpy
 import sqlite3
 import sys
 import tempfile
@@ -25,6 +27,7 @@ from vscode_inject import account_services
 from vscode_inject import backups
 from vscode_inject import codex_accounts
 from vscode_inject import gui_app
+from vscode_inject import gui_tabs
 from vscode_inject import ide_context
 from vscode_inject import kilo_new_accounts
 from vscode_inject import refresh_scheduler
@@ -572,6 +575,15 @@ class StateDbModuleTests(TempDirTestCase):
         with patch.object(state_db.ctypes, "windll", fake_windll):
             self.assertEqual(state_db.get_aes_key(str(local_state_path), print_fn=messages.append), secret)
         self.assertEqual(messages, [])
+
+        fail_messages: list[str] = []
+        failing_windll = SimpleNamespace(
+            crypt32=SimpleNamespace(CryptUnprotectData=lambda *_args: 0),
+            kernel32=SimpleNamespace(LocalFree=lambda _ptr: None),
+        )
+        with patch.object(state_db.ctypes, "windll", failing_windll):
+            self.assertIsNone(state_db.get_aes_key(str(local_state_path), print_fn=fail_messages.append))
+        self.assertIn("CryptUnprotectData failed", fail_messages[0])
 
         missing_messages: list[str] = []
         self.assertIsNone(state_db.get_aes_key(str(self.root / "missing.json"), print_fn=missing_messages.append))
@@ -1396,3 +1408,344 @@ class GuiAppModuleTests(unittest.TestCase):
             self.assertEqual(len(auto_refresh_logs), 1)
             self.assertEqual(auto_refresh_logs[0].message, "auto refreshed")
             self.assertIn((gui_app.AUTO_REFRESH_START_DELAY_MS, request_auto_refresh, ()), root.after_calls)
+
+            with patch("vscode_inject.gui_app.start_auto_refresh_worker", return_value=False):
+                request_auto_refresh(*request_args)
+            self.assertIn((321, request_auto_refresh, ()), root.after_calls)
+
+
+class GuiTabsHandlerTests(unittest.TestCase):
+    def test_update_run_button_visibility_hides_visible_button_without_real_widgets(self):
+        run_button = SimpleNamespace(pack_forget=Mock(), pack=Mock())
+        tab = SimpleNamespace(run_button=run_button, run_button_visible=True, backup_button=object())
+
+        gui_tabs.IdeAccountsTab.update_run_button_visibility(tab, True)
+
+        run_button.pack_forget.assert_called_once_with()
+        self.assertFalse(tab.run_button_visible)
+
+    def make_fake_ide_tab(self):
+        db_module = SimpleNamespace(
+            save_ide_account=Mock(name="save_ide_account"),
+            use_ide_account=Mock(name="use_ide_account"),
+            refresh_saved_account=Mock(name="refresh_saved_account"),
+            backup=Mock(name="backup"),
+            launch_ide=lambda ide: f"Started {ide}",
+            is_ide_running=lambda ide: False,
+            IDE_PATHS={"vscode": {"label": "VSCode"}, "antigravity": {"label": "Antigravity"}},
+        )
+        services = SimpleNamespace(
+            db=db_module,
+            root=object(),
+            run_guarded=Mock(),
+            set_status=Mock(),
+            refresh_all=Mock(),
+        )
+        tab = SimpleNamespace(
+            services=services,
+            tree=Mock(),
+            ide_var=SimpleNamespace(get=lambda: "vscode"),
+            refresh=Mock(),
+        )
+        tab.selected_exts = Mock(return_value=["kilocode"])
+        tab.db_target_ides_for_exts = lambda exts: ["vscode"] if any(ext in ("kilocode", "roo-cline") for ext in exts) else []
+        tab.kilo_new_target_ides_for_exts = lambda exts: ["vscode", "antigravity"] if "kilo-new" in exts else []
+        tab.can_hot_swap_kilo_new = Mock(return_value=False)
+        tab.required_closed_ides_for_exts = (
+            lambda exts, allow_kilo_new_while_running=False: ["vscode"]
+            if "kilocode" in exts
+            else ([] if allow_kilo_new_while_running else ["vscode", "antigravity"])
+        )
+        tab.format_ide_labels = lambda ides: " and ".join(services.db.IDE_PATHS[ide]["label"] for ide in ides)
+        tab.format_ext_selection = lambda exts: "+".join(exts)
+        return tab, services, db_module
+
+    def test_on_ide_change_and_save_handlers_do_not_need_real_tk_widgets(self):
+        tab, services, db_module = self.make_fake_ide_tab()
+        db_module.set_ide = Mock()
+
+        gui_tabs.IdeAccountsTab.on_ide_change(tab)
+        db_module.set_ide.assert_called_once_with("vscode")
+        tab.refresh.assert_called_once_with()
+
+        tab.refresh.reset_mock()
+        with patch("vscode_inject.gui_tabs.ask_account_name", return_value=None):
+            gui_tabs.IdeAccountsTab.on_save(tab)
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.ask_account_name", return_value="alice"):
+            tab.selected_exts = Mock(return_value=[])
+            gui_tabs.IdeAccountsTab.on_save(tab)
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.ask_account_name", return_value="alice"):
+            tab.selected_exts = Mock(return_value=["kilocode"])
+            gui_tabs.IdeAccountsTab.on_save(tab)
+        services.run_guarded.assert_called_once_with(
+            db_module.save_ide_account,
+            "alice",
+            ["kilocode"],
+            success_msg="Saved 'alice' [kilocode]",
+        )
+
+    def test_on_use_branches_do_not_need_real_tk_widgets(self):
+        tab, services, db_module = self.make_fake_ide_tab()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value=None):
+            gui_tabs.IdeAccountsTab.on_use(tab)
+        services.run_guarded.assert_not_called()
+
+        tab.selected_exts = Mock(return_value=[])
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
+            gui_tabs.IdeAccountsTab.on_use(tab)
+        services.run_guarded.assert_not_called()
+
+        tab.selected_exts = Mock(return_value=["kilo-new"])
+        db_module.is_ide_running = lambda ide: True
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.showerror"
+        ) as showerror:
+            gui_tabs.IdeAccountsTab.on_use(tab)
+        showerror.assert_called_once_with(
+            "VSCode and Antigravity running",
+            "Close VSCode and Antigravity before switching accounts.",
+        )
+
+        tab.selected_exts = Mock(return_value=["kilocode"])
+        db_module.is_ide_running = lambda ide: False
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=False
+        ) as askyesno:
+            gui_tabs.IdeAccountsTab.on_use(tab)
+        askyesno.assert_called_once_with(
+            "Switch IDE account",
+            "Switch 'alice' [kilocode]?\nVSCode must stay closed until done.",
+        )
+        services.run_guarded.assert_not_called()
+
+        services.run_guarded.reset_mock()
+        tab.selected_exts = Mock(return_value=["kilo-new"])
+        tab.can_hot_swap_kilo_new = Mock(return_value=True)
+        db_module.is_ide_running = lambda ide: True
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=False
+        ) as askyesno:
+            gui_tabs.IdeAccountsTab.on_use(tab)
+        askyesno.assert_called_once()
+        services.run_guarded.assert_not_called()
+
+        services.run_guarded.reset_mock()
+        tab.selected_exts = Mock(return_value=["kilo-new"])
+        tab.can_hot_swap_kilo_new = Mock(return_value=True)
+        db_module.is_ide_running = lambda ide: True
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", side_effect=[True, True]
+        ) as askyesno:
+            gui_tabs.IdeAccountsTab.on_use(tab)
+        self.assertEqual(askyesno.call_count, 2)
+        services.run_guarded.assert_called_once_with(
+            db_module.use_ide_account,
+            "alice",
+            ["kilo-new"],
+            True,
+            success_msg="Switched 'alice' [kilo-new]",
+        )
+
+    def test_delete_refresh_backup_run_and_refresh_handlers_do_not_need_real_tk_widgets(self):
+        tab, services, db_module = self.make_fake_ide_tab()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value=None):
+            gui_tabs.IdeAccountsTab.on_delete(tab)
+        services.set_status.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=False
+        ) as askyesno, patch("vscode_inject.gui_tabs.delete_saved_account") as delete_saved_account:
+            gui_tabs.IdeAccountsTab.on_delete(tab)
+        askyesno.assert_called_once_with("Delete", "Delete saved account 'alice'?")
+        delete_saved_account.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
+        ), patch("vscode_inject.gui_tabs.delete_saved_account") as delete_saved_account:
+            gui_tabs.IdeAccountsTab.on_delete(tab)
+        delete_saved_account.assert_called_once_with(db_module, "alice")
+        services.set_status.assert_called_once_with("Deleted 'alice'", True)
+        services.refresh_all.assert_called_once_with()
+
+        services.set_status.reset_mock()
+        services.refresh_all.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
+        ), patch("vscode_inject.gui_tabs.delete_saved_account", side_effect=OSError("delete failed")):
+            gui_tabs.IdeAccountsTab.on_delete(tab)
+        services.set_status.assert_called_once_with("delete failed", False)
+        services.refresh_all.assert_not_called()
+
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value=None):
+            gui_tabs.IdeAccountsTab.on_refresh_selected(tab)
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
+            gui_tabs.IdeAccountsTab.on_refresh_selected(tab)
+        services.run_guarded.assert_called_once_with(db_module.refresh_saved_account, "alice", log_prefix="manual-refresh")
+
+        services.run_guarded.reset_mock()
+        gui_tabs.IdeAccountsTab.on_backup(tab)
+        services.run_guarded.assert_called_once_with(db_module.backup)
+
+        gui_tabs.IdeAccountsTab.on_refresh(tab)
+        services.refresh_all.assert_called_once_with()
+        self.assertEqual(services.set_status.call_args_list[-1].args, ("Refreshed", True))
+
+        gui_tabs.IdeAccountsTab.on_run(tab)
+        self.assertEqual(services.set_status.call_args_list[-1].args, ("Started vscode", True))
+        tab.refresh.assert_called_once_with()
+
+        services.set_status.reset_mock()
+        tab.refresh.reset_mock()
+        db_module.launch_ide = lambda ide: (_ for _ in ()).throw(RuntimeError("launch failed"))
+        with patch("vscode_inject.gui_tabs.messagebox.showerror") as showerror:
+            gui_tabs.IdeAccountsTab.on_run(tab)
+        showerror.assert_called_once_with("Run IDE", "launch failed")
+        services.set_status.assert_called_once_with("launch failed", False)
+        tab.refresh.assert_not_called()
+
+
+class ModuleEntryPointTests(unittest.TestCase):
+    def test_module_entry_points_execute_expected_dispatch(self):
+        import importlib
+        import warnings
+
+        package_main = importlib.import_module("vscode_inject.main")
+        calls: list[str] = []
+
+        with patch.object(package_main, "main", side_effect=lambda: calls.append("main-called")):
+            runpy.run_module("vscode_inject.__main__", run_name="__main__")
+        self.assertEqual(calls, ["main-called"])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            with self.assertRaisesRegex(SystemExit, "CLI support removed"):
+                runpy.run_module("vscode_inject.parse_vscdb", run_name="__main__")
+
+    def test_gui_app_module_entry_point_runs_main_with_fake_tk(self):
+        import warnings
+
+        class FakeRoot:
+            def title(self, _value):
+                pass
+
+            def resizable(self, _width, _height):
+                pass
+
+            def configure(self, **_kwargs):
+                pass
+
+            def after(self, _delay, _callback, *_args):
+                pass
+
+            def update_idletasks(self):
+                pass
+
+            def geometry(self, _value):
+                pass
+
+            def winfo_reqwidth(self):
+                return 980
+
+            def winfo_reqheight(self):
+                return 480
+
+            def mainloop(self):
+                pass
+
+        class FakeStringVar:
+            def __init__(self, value=""):
+                self.value = value
+
+            def set(self, value):
+                self.value = value
+
+        class FakeLabel:
+            def __init__(self, _root, **_kwargs):
+                pass
+
+            def config(self, **_kwargs):
+                pass
+
+            def pack(self, **_kwargs):
+                pass
+
+        class FakeStyle:
+            def theme_use(self, _name):
+                pass
+
+            def configure(self, *_args, **_kwargs):
+                pass
+
+            def map(self, *_args, **_kwargs):
+                pass
+
+        class FakeNotebook:
+            def __init__(self, _root):
+                self.selected = ".ide"
+
+            def pack(self, **_kwargs):
+                pass
+
+            def select(self):
+                return self.selected
+
+        class FakeIdeTab:
+            def __init__(self, _notebook, services):
+                self.frame = ".ide"
+                self.services = services
+
+            def refresh(self):
+                pass
+
+            def refresh_runtime_state(self):
+                pass
+
+        class FakeCodexTab:
+            def __init__(self, _notebook, services):
+                self.services = services
+
+            def refresh(self):
+                pass
+
+        class FakeAutoRefreshScheduler:
+            def __init__(self, **_kwargs):
+                self.policy = SimpleNamespace(min_delay_ms=321, scan_interval_ms=654)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            with patch("tkinter.Tk", return_value=FakeRoot()), patch("tkinter.StringVar", FakeStringVar), patch(
+                "tkinter.Label", FakeLabel
+            ), patch("tkinter.ttk.Style", FakeStyle), patch("tkinter.ttk.Notebook", FakeNotebook), patch(
+                "vscode_inject.gui_tabs.IdeAccountsTab", FakeIdeTab
+            ), patch("vscode_inject.gui_tabs.CodexTab", FakeCodexTab), patch(
+                "vscode_inject.refresh_scheduler.AutoRefreshScheduler", FakeAutoRefreshScheduler
+            ):
+                runpy.run_module("vscode_inject.gui_app", run_name="__main__")
+
+
+class IdeContextImportFallbackTests(unittest.TestCase):
+    def test_module_import_sets_winreg_to_none_when_unavailable(self):
+        spec = importlib.util.find_spec("vscode_inject.ide_context")
+        self.assertIsNotNone(spec)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        real_import = __import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "winreg":
+                raise ImportError("winreg unavailable")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            spec.loader.exec_module(module)
+
+        self.assertIsNone(module.winreg)
