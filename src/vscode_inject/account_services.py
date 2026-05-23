@@ -318,8 +318,6 @@ def use_ide_account(
             if existing:
                 remapped_entries.append(existing)
                 continue
-            if not generic_source:
-                raise user_facing_error_cls(f"No source entry available for '{ext_id}'.")
             print_fn(f"[cross-ext] No '{ext_id}' key — remapping from: {generic_source['key']}")
             remapped_entries.append({"key": target_key, "value": generic_source["value"]})
         apply_db_entries(remapped_entries)
@@ -328,9 +326,6 @@ def use_ide_account(
         return
 
     source_entry = source_kilo_new or generic_source
-    if not source_entry:
-        raise user_facing_error_cls("No source entry available for 'kilo-new'.")
-
     new_entry = to_kilo_new_format(source_entry["value"])
     kilo_auth = read_kilo_auth()
     kilo_auth["openai"] = new_entry

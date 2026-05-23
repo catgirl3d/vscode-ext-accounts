@@ -72,6 +72,29 @@ class SavedAccountsTests(unittest.TestCase):
         self.assertEqual(self.read_json(first), {"name": "first", "value": 1})
         self.assertEqual(self.read_json(second), {"name": "second", "value": 2})
 
+    def test_cleanup_paths_ignore_missing_temp_files(self):
+        target = self.root / "accounts" / "broken.json"
+
+        with patch("vscode_inject.saved_accounts.json.dump", side_effect=RuntimeError("dump failed")):
+            with patch("vscode_inject.saved_accounts.os.unlink", side_effect=FileNotFoundError):
+                with self.assertRaisesRegex(RuntimeError, "dump failed"):
+                    saved_accounts._stage_saved_account_data(str(target), {"name": "broken"})
+
+        existing = self.root / "accounts" / "existing.json"
+        self.write_json(existing, {"name": "existing", "value": 1})
+        with patch("vscode_inject.saved_accounts.os.replace", side_effect=OSError("replace failed")):
+            with patch("vscode_inject.saved_accounts.os.unlink", side_effect=FileNotFoundError):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    saved_accounts._restore_account_file_bytes(str(existing), b'{"name":"restored","value":2}')
+
+        staged_path = self.root / "accounts" / "missing-stage.json"
+        target_path = self.root / "accounts" / "target.json"
+        with patch("vscode_inject.saved_accounts._stage_saved_account_data", return_value=str(staged_path)):
+            with patch("vscode_inject.saved_accounts.os.replace", side_effect=OSError("replace failed")):
+                with patch("vscode_inject.saved_accounts.os.unlink", side_effect=FileNotFoundError):
+                    with self.assertRaisesRegex(OSError, "replace failed"):
+                        saved_accounts.write_saved_account_batch([(str(target_path), {"name": "target"})])
+
 
 if __name__ == "__main__":
     unittest.main()
