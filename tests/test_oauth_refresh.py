@@ -6,6 +6,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib import error as urlerror
 
 
@@ -556,6 +557,70 @@ class OAuthRefreshTests(unittest.TestCase):
         )
 
         self.assertFalse(refresh.is_terminal_refresh_error(exc))
+
+    def test_remaining_time_error_and_group_fallback_paths(self):
+        class FixedDateTime(refresh.datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2024, 1, 2, 3, 4, 5, tzinfo=tz)
+
+        bad_payload = base64.urlsafe_b64encode(b"not-json").decode("utf-8").rstrip("=")
+
+        with patch("vscode_inject.oauth_refresh.datetime.datetime", FixedDateTime):
+            self.assertEqual(refresh.current_time_ms(), 1_704_164_645_000)
+            self.assertEqual(refresh.current_time_iso(), "2024-01-02T03:04:05Z")
+
+        self.assertIsNone(refresh.decode_jwt_claims(f"header.{bad_payload}.signature"))
+        self.assertEqual(refresh._oauth_error_details(json.dumps(["bad"])), (None, None))
+        self.assertEqual(refresh._oauth_error_details(json.dumps({"error": "invalid_grant"})), ("invalid_grant", None))
+
+        bundle = refresh.TokenBundle(
+            access_token="old-access",
+            refresh_token="keep-refresh",
+            expires=1,
+            account_id="acct-existing",
+            id_token="existing-id",
+        )
+
+        with self.assertRaisesRegex(refresh.TokenExchangeError, "missing access_token"):
+            refresh.refresh_openai_codex_bundle(
+                bundle,
+                post_form=lambda _url, _data: {"refresh_token": "new-refresh"},
+            )
+
+        refreshed = refresh.refresh_openai_codex_bundle(
+            bundle,
+            post_form=lambda _url, _data: {"access_token": "new-access", "expires_in": "bad"},
+            now_ms=lambda: 5_000,
+        )
+        self.assertEqual(
+            refreshed,
+            refresh.TokenBundle(
+                access_token="new-access",
+                refresh_token="keep-refresh",
+                expires=5_000 + refresh.DEFAULT_EXPIRES_IN_SECONDS * 1_000,
+                account_id="acct-existing",
+                id_token="existing-id",
+            ),
+        )
+
+        grouped = refresh.collect_refresh_groups(
+            [
+                refresh.SavedAccountRecord(name="bad-layout", path="bad-layout.json", data={"entries": "bad"}),
+                refresh.SavedAccountRecord(
+                    name="bad-entries",
+                    path="bad-entries.json",
+                    data={
+                        "entries": [
+                            {"key": 123, "value": {}},
+                            {"key": "custom", "value": {"refresh_token": "refresh-1"}},
+                            {"key": "also-bad", "value": "not-a-mapping"},
+                        ]
+                    },
+                ),
+            ]
+        )
+        self.assertEqual(grouped, [])
 
 
 if __name__ == "__main__":
