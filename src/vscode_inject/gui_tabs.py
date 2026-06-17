@@ -6,6 +6,8 @@ from typing import Any, Callable
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from . import saved_account_status
+
 
 IDE_EXTENSION_ORDER = ("kilocode", "roo-cline", "kilo-new")
 IDE_STATE_LABEL_WIDTH = 24
@@ -71,20 +73,20 @@ def expires_row_tags(expires_ms, now_ms=None):
 
 
 def format_refresh_status(status):
-    if status == "terminal_error":
+    if status == saved_account_status.REFRESH_STATUS_TERMINAL_ERROR:
         return "invalid"
-    if status == "error":
+    if status == saved_account_status.REFRESH_STATUS_ERROR:
         return "error"
-    if status == "ok":
+    if status == saved_account_status.REFRESH_STATUS_OK:
         return "ok"
     return "-"
 
 
 def account_row_tags(data, expires_ms, now_ms=None):
     status = data.get("refresh_status") if isinstance(data, dict) else None
-    if status == "terminal_error":
+    if status == saved_account_status.REFRESH_STATUS_TERMINAL_ERROR:
         return (TERMINAL_REFRESH_ERROR_ROW_TAG,)
-    if status == "error":
+    if status == saved_account_status.REFRESH_STATUS_ERROR:
         return (REFRESH_ERROR_ROW_TAG,)
     return expires_row_tags(expires_ms, now_ms=now_ms)
 
@@ -134,16 +136,39 @@ def selected_name(tree, empty_message):
     return selection[0]
 
 
-def ask_account_name(root, title, prompt):
-    name = simpledialog.askstring(title, prompt, parent=root)
+def ask_account_name(root, title, prompt, initialvalue=None):
+    name = simpledialog.askstring(title, prompt, parent=root, initialvalue=initialvalue)
     if not name:
         return None
-    return name.strip().replace(" ", "_")
+    normalized = name.strip()
+    return normalized or None
 
 
 def delete_saved_account(db_module, name):
-    path = os.path.join(db_module._accounts_dir(), f"{name}.json")
-    os.remove(path)
+    db_module.delete_saved_account(name)
+
+
+def select_tree_item(tree, name):
+    if not tree.exists(name):
+        return
+    tree.selection_set(name)
+    tree.focus(name)
+    tree.see(name)
+    tree.focus_set()
+
+
+def popup_tree_context_menu(tree, menu, event):
+    item = tree.identify_row(event.y)
+    if not item:
+        return
+    tree.selection_set(item)
+    tree.focus(item)
+    tree.see(item)
+    tree.focus_set()
+    try:
+        menu.tk_popup(event.x_root, event.y_root)
+    finally:
+        menu.grab_release()
 
 
 def tab_button(parent, services: GuiServices, text: str, cmd, accent=False):
@@ -267,23 +292,29 @@ class IdeAccountsTab:
         self.tree.heading("expires", text="Expires")
         self.tree.heading("active", text="Active")
         self.tree.heading("status", text="Status")
-        self.tree.column("name", width=110, anchor="w")
-        self.tree.column("ext", width=180, anchor="w")
-        self.tree.column("accountIds", width=160, anchor="w")
-        self.tree.column("saved", width=110, anchor="center")
+        self.tree.column("name", width=225, anchor="w")
+        self.tree.column("ext", width=75, anchor="w")
+        self.tree.column("accountIds", width=100, anchor="w")
+        self.tree.column("saved", width=112, anchor="center")
         self.tree.column("expires", width=80, anchor="center")
-        self.tree.column("active", width=90, anchor="center")
-        self.tree.column("status", width=90, anchor="center")
+        self.tree.column("active", width=60, anchor="center")
+        self.tree.column("status", width=60, anchor="center")
         self.tree.tag_configure(EXPIRED_ROW_TAG, foreground=EXPIRED_ROW_FG)
         self.tree.tag_configure(REFRESH_ERROR_ROW_TAG, foreground=REFRESH_ERROR_ROW_FG)
         self.tree.tag_configure(TERMINAL_REFRESH_ERROR_ROW_TAG, foreground=TERMINAL_REFRESH_ERROR_ROW_FG)
         self.tree.pack(padx=10, pady=(0, 6))
+        self.context_menu = tk.Menu(self.tree, tearoff=False)
+        self.context_menu.add_command(label="Use selected", command=self.on_use)
+        self.context_menu.add_command(label="Rename", command=self.on_rename)
+        self.tree.bind("<F2>", self.on_rename_key)
+        self.tree.bind("<Button-3>", self.on_tree_context_menu)
 
         self.btn_frame = tk.Frame(self.frame, bg=bg)
         self.btn_frame.pack(padx=10, pady=(0, 6))
         tab_button(self.btn_frame, self.services, "💾 Save current", self.on_save, accent=True)
         tab_button(self.btn_frame, self.services, "▶ Use selected", self.on_use)
         tab_button(self.btn_frame, self.services, "↻ Refresh selected", self.on_refresh_selected)
+        tab_button(self.btn_frame, self.services, "✏ Rename", self.on_rename)
         tab_button(self.btn_frame, self.services, "🗑 Delete", self.on_delete)
         tab_button(self.btn_frame, self.services, "⟳ Refresh", self.on_refresh)
         self.run_button = tab_button(self.btn_frame, self.services, "RUN", self.on_run)
@@ -435,6 +466,29 @@ class IdeAccountsTab:
         self.services.db.set_ide(self.ide_var.get())
         self.refresh()
 
+    def on_tree_context_menu(self, event):
+        popup_tree_context_menu(self.tree, self.context_menu, event)
+        return "break"
+
+    def on_rename_key(self, _event=None):
+        self.on_rename()
+        return "break"
+
+    def on_rename(self):
+        name = selected_name(self.tree, "Select an IDE account first.")
+        if not name:
+            return
+        new_name = ask_account_name(self.services.root, "Rename IDE account", "New account name:", initialvalue=name)
+        if not new_name or new_name == name:
+            return
+        try:
+            self.services.db.rename_saved_account(name, new_name, expected_kind="ide")
+            self.services.refresh_all()
+            select_tree_item(self.tree, new_name)
+            self.services.set_status(f"Renamed '{name}' to '{new_name}'", True)
+        except Exception as exc:
+            self.services.set_status(str(exc), False)
+
     def on_save(self):
         name = ask_account_name(self.services.root, "Save IDE account", "Account name:")
         if not name:
@@ -582,15 +636,21 @@ class CodexTab:
         self.tree.tag_configure(REFRESH_ERROR_ROW_TAG, foreground=REFRESH_ERROR_ROW_FG)
         self.tree.tag_configure(TERMINAL_REFRESH_ERROR_ROW_TAG, foreground=TERMINAL_REFRESH_ERROR_ROW_FG)
         self.tree.pack(padx=10, pady=(0, 6))
+        self.context_menu = tk.Menu(self.tree, tearoff=False)
+        self.context_menu.add_command(label="Use selected", command=self.on_use)
+        self.context_menu.add_command(label="Rename", command=self.on_rename)
+        self.tree.bind("<F2>", self.on_rename_key)
+        self.tree.bind("<Button-3>", self.on_tree_context_menu)
 
-        btn_frame = tk.Frame(self.frame, bg=bg)
-        btn_frame.pack(padx=10, pady=(0, 6))
-        tab_button(btn_frame, self.services, "💾 Save current Codex", self.on_save, accent=True)
-        tab_button(btn_frame, self.services, "📥 Import Codex auth", self.on_import)
-        tab_button(btn_frame, self.services, "▶ Use selected Codex", self.on_use)
-        tab_button(btn_frame, self.services, "↻ Refresh selected", self.on_refresh_selected)
-        tab_button(btn_frame, self.services, "🗑 Delete", self.on_delete)
-        tab_button(btn_frame, self.services, "⟳ Refresh", self.on_refresh)
+        self.btn_frame = tk.Frame(self.frame, bg=bg)
+        self.btn_frame.pack(padx=10, pady=(0, 6))
+        tab_button(self.btn_frame, self.services, "💾 Save current Codex", self.on_save, accent=True)
+        tab_button(self.btn_frame, self.services, "📥 Import Codex auth", self.on_import)
+        tab_button(self.btn_frame, self.services, "▶ Use selected Codex", self.on_use)
+        tab_button(self.btn_frame, self.services, "↻ Refresh selected", self.on_refresh_selected)
+        tab_button(self.btn_frame, self.services, "✏ Rename", self.on_rename)
+        tab_button(self.btn_frame, self.services, "🗑 Delete", self.on_delete)
+        tab_button(self.btn_frame, self.services, "⟳ Refresh", self.on_refresh)
 
     def update_current_label(self, current_account):
         if current_account:
@@ -637,6 +697,29 @@ class CodexTab:
         if not name:
             return
         self.services.run_guarded(self.services.db.save_codex_account, name, success_msg=f"Saved Codex account '{name}'")
+
+    def on_tree_context_menu(self, event):
+        popup_tree_context_menu(self.tree, self.context_menu, event)
+        return "break"
+
+    def on_rename_key(self, _event=None):
+        self.on_rename()
+        return "break"
+
+    def on_rename(self):
+        name = selected_name(self.tree, "Select a Codex account first.")
+        if not name:
+            return
+        new_name = ask_account_name(self.services.root, "Rename Codex account", "New account name:", initialvalue=name)
+        if not new_name or new_name == name:
+            return
+        try:
+            self.services.db.rename_saved_account(name, new_name, expected_kind="codex")
+            self.services.refresh_all()
+            select_tree_item(self.tree, new_name)
+            self.services.set_status(f"Renamed '{name}' to '{new_name}'", True)
+        except Exception as exc:
+            self.services.set_status(str(exc), False)
 
     def on_import(self):
         path = filedialog.askopenfilename(

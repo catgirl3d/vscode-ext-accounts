@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass
 from typing import Callable, Mapping, Sequence
 
+from . import saved_account_status
+
 
 @dataclass(frozen=True)
 class SavedAccountWriteResult:
@@ -166,7 +168,10 @@ def save_ide_account(
     entries = read_current_ide_entries_for_selection(ext_names)
     if not entries:
         raise user_facing_error_cls(f"No matching account entries found for {ext_label}.")
-    out = write_account_file(name, "ide", ext_label, entries)
+    try:
+        out = write_account_file(name, "ide", ext_label, entries)
+    except ValueError as exc:
+        raise user_facing_error_cls(str(exc)) from exc
     return SavedAccountWriteResult(path=out, ext_label=ext_label, entries=entries)
 
 
@@ -186,7 +191,10 @@ def save_codex_account(
         raise user_facing_error_cls("ERROR: Codex auth.json requires id_token.")
 
     entry = {"key": codex_key, "value": value}
-    out = write_account_file(name, "codex", "codex", [entry])
+    try:
+        out = write_account_file(name, "codex", "codex", [entry])
+    except ValueError as exc:
+        raise user_facing_error_cls(str(exc)) from exc
     return SavedAccountWriteResult(path=out, ext_label="codex", entries=[entry])
 
 
@@ -196,6 +204,7 @@ def refresh_saved_account(
     operation_lock,
     load_saved_account_data,
     oauth_refresh_module,
+    is_terminal_refresh_error: Callable[[Exception], bool],
     write_saved_account_batch,
     persist_refreshed_saved_account_batch,
     saved_account_refresh_error_cls,
@@ -218,7 +227,9 @@ def refresh_saved_account(
             refreshed = oauth_refresh_module.refresh_saved_entries(entries)
         except oauth_refresh_module.OAuthRefreshError as exc:
             updated_data["refresh_status"] = (
-                "terminal_error" if oauth_refresh_module.is_terminal_refresh_error(exc) else "error"
+                saved_account_status.REFRESH_STATUS_TERMINAL_ERROR
+                if is_terminal_refresh_error(exc)
+                else saved_account_status.REFRESH_STATUS_ERROR
             )
             updated_data["refresh_error"] = str(exc)
             updated_data["refresh_error_at"] = oauth_refresh_module.current_time_iso()
@@ -227,7 +238,7 @@ def refresh_saved_account(
 
         updated_data["entries"] = refreshed.entries
         updated_data["last_refreshed_at"] = refreshed.refreshed_at
-        updated_data["refresh_status"] = "ok"
+        updated_data["refresh_status"] = saved_account_status.REFRESH_STATUS_OK
         updated_data.pop("refresh_error", None)
         updated_data.pop("refresh_error_at", None)
         try:
@@ -399,7 +410,10 @@ def import_codex_account(
         raise user_facing_error_cls("ERROR: Codex import requires id_token in auth.json.")
 
     entry = {"key": codex_key, "value": value}
-    out = write_account_file(name, "codex", "codex", [entry])
+    try:
+        out = write_account_file(name, "codex", "codex", [entry])
+    except ValueError as exc:
+        raise user_facing_error_cls(str(exc)) from exc
     return ImportedCodexAccountResult(path=out, account_id=account_id, expires_ms=expires_ms)
 
 

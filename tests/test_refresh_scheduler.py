@@ -125,7 +125,7 @@ class RefreshSchedulerTests(unittest.TestCase):
                         }
                     ],
                     "last_refreshed_at": "2026-05-15T15:00:00Z",
-                    "refresh_status": "ok",
+                    "refresh_status": oauth_refresh.REFRESH_STATUS_OK,
                 },
                 "bob.json": {
                     "entries": [
@@ -142,7 +142,7 @@ class RefreshSchedulerTests(unittest.TestCase):
                         }
                     ],
                     "last_refreshed_at": "2026-05-15T15:00:00Z",
-                    "refresh_status": "ok",
+                    "refresh_status": oauth_refresh.REFRESH_STATUS_OK,
                 },
             },
         )
@@ -306,7 +306,7 @@ class RefreshSchedulerTests(unittest.TestCase):
                                 },
                             }
                         ],
-                        "refresh_status": "terminal_error",
+                        "refresh_status": oauth_refresh.REFRESH_STATUS_TERMINAL_ERROR,
                         "refresh_error": "Token refresh failed: 401 invalid_request_error: Your refresh token has already been used to generate a new access token.",
                         "refresh_error_at": "2026-05-15T18:00:00Z",
                     }
@@ -525,7 +525,7 @@ class RefreshSchedulerTests(unittest.TestCase):
                             }
                         ],
                         "last_refreshed_at": "2026-05-15T19:00:00Z",
-                        "refresh_status": "ok",
+                        "refresh_status": oauth_refresh.REFRESH_STATUS_OK,
                     }
                 }
             ],

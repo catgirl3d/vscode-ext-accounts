@@ -1,22 +1,20 @@
 from __future__ import annotations
 
+try:
+    import test_utils.bootstrap  # type: ignore
+except ImportError:
+    import tests.test_utils.bootstrap  # type: ignore
+
+import base64
+import ctypes
 import json
 import sqlite3
-import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
-from vscode_inject import ide_context
-from vscode_inject import account_services
-from vscode_inject import parse_vscdb as db
 from vscode_inject import state_db
 
 
@@ -40,55 +38,189 @@ def read_state_rows(path: Path) -> dict[str, str]:
         con.close()
 
 
-class RefactorContractTests(unittest.TestCase):
+class StateDbModuleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
         self.root = Path(self.tempdir.name)
 
-    def patch_db(self, name: str, value):
-        patcher = patch.object(db, name, value)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        return value
+    def test_get_aes_key_success_and_failure_paths(self):
+        local_state_path = self.root / "Local State"
+        local_state_path.parent.mkdir(parents=True, exist_ok=True)
+        local_state_path.write_text(json.dumps({"os_crypt": {"encrypted_key": base64.b64encode(b"DPAPIencrypted").decode("ascii")}}), encoding="utf-8")
+        
+        secret = b"secret-key"
+        buffer = ctypes.create_string_buffer(secret)
 
-    def test_explicit_ide_context_matches_facade_selection_contract(self):
-        self.patch_db("CURRENT_IDE", db.CURRENT_IDE)
-        self.patch_db("DB_PATH", db.DB_PATH)
-        self.patch_db("LOCAL_STATE_PATH", db.LOCAL_STATE_PATH)
-        custom_paths = {
-            "vscode": {
-                "label": "VSCode",
-                "db": "db-vscode",
-                "local_state": "local-vscode",
-                "process": "Code.exe",
-            },
-            "antigravity": {
-                "label": "Antigravity",
-                "db": "db-antigravity",
-                "local_state": "local-antigravity",
-                "process": "Antigravity.exe",
-            },
-        }
-        self.patch_db("IDE_PATHS", custom_paths)
+        def fake_unprotect(_p_in, _desc, _opt1, _opt2, _opt3, _flags, p_out):
+            p_out._obj.cbData = len(secret)
+            p_out._obj.pbData = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char))
+            return 1
 
-        explicit = ide_context.resolve_context("antigravity", custom_paths)
-        db.set_ide("antigravity")
-        selected = db._ide_context_for()
+        fake_windll = SimpleNamespace(
+            crypt32=SimpleNamespace(CryptUnprotectData=fake_unprotect),
+            kernel32=SimpleNamespace(LocalFree=lambda _ptr: None),
+        )
+        messages: list[str] = []
 
-        self.assertEqual(db.CURRENT_IDE, explicit.name)
-        self.assertEqual(db.DB_PATH, explicit.db_path)
-        self.assertEqual(db.LOCAL_STATE_PATH, explicit.local_state_path)
-        self.assertEqual(selected.name, explicit.name)
-        self.assertEqual(selected.db_path, explicit.db_path)
-        self.assertEqual(selected.local_state_path, explicit.local_state_path)
+        with patch.object(state_db.ctypes, "windll", fake_windll):
+            self.assertEqual(state_db.get_aes_key(str(local_state_path), print_fn=messages.append), secret)
+        self.assertEqual(messages, [])
 
-    def test_windows_app_path_candidates_returns_empty_when_winreg_is_unavailable(self):
-        with patch.object(ide_context, "winreg", None):
-            self.assertEqual(ide_context.windows_app_path_candidates("Code.exe"), [])
+        fail_messages: list[str] = []
+        failing_windll = SimpleNamespace(
+            crypt32=SimpleNamespace(CryptUnprotectData=lambda *_args: 0),
+            kernel32=SimpleNamespace(LocalFree=lambda _ptr: None),
+        )
+        with patch.object(state_db.ctypes, "windll", failing_windll):
+            self.assertIsNone(state_db.get_aes_key(str(local_state_path), print_fn=fail_messages.append))
+        self.assertIn("CryptUnprotectData failed", fail_messages[0])
+
+        missing_messages: list[str] = []
+        self.assertIsNone(state_db.get_aes_key(str(self.root / "missing.json"), print_fn=missing_messages.append))
+        self.assertEqual(len(missing_messages), 1)
+        self.assertIn("Could not get AES key", missing_messages[0])
+
+    def test_decrypt_decode_and_serialize_helpers(self):
+        aes_key = b"0" * 32
+        encrypted = state_db.encrypt_value("secret-value", aes_key)
+
+        self.assertEqual(state_db.decrypt_value(b"", None), "")
+        self.assertEqual(state_db.decrypt_value(b"plain-text", None), "plain-text")
+        self.assertTrue(state_db.decrypt_value(b"\xff\xfe", None).startswith("b'"))
+        self.assertIn("DPAPI key unavailable", state_db.decrypt_value(encrypted, None))
+        self.assertEqual(state_db.decrypt_value(encrypted, aes_key), "secret-value")
+        decrypted_val = state_db.decrypt_value(encrypted[:-1] + b"x", aes_key)
+        self.assertTrue(
+            decrypted_val.startswith("<decrypt failed:"),
+            msg=f"Expected startswith '<decrypt failed:', got {repr(decrypted_val)}"
+        )
+
+        self.assertEqual(
+            state_db.decode_entry(b"raw-bytes", None, decrypt_value_fn=lambda raw, _aes_key: raw.decode("utf-8").upper()),
+            "RAW-BYTES",
+        )
+        self.assertEqual(
+            state_db.decode_entry(
+                json.dumps({"type": "Buffer", "data": list(b"abc")}),
+                None,
+                decrypt_value_fn=lambda raw, _aes_key: raw.decode("utf-8").upper(),
+            ),
+            "ABC",
+        )
+        self.assertEqual(state_db.decode_entry("not-json", None), "not-json")
+        self.assertEqual(state_db.decode_entry(None, None), "")
+
+        self.assertEqual(
+            json.loads(state_db.serialize_entry_value("secret://key", "", aes_key)),
+            {"type": "Buffer", "data": []},
+        )
+
+        encrypted_calls: list[tuple[str, bytes]] = []
+
+        def fake_encrypt_value(plaintext: str, key: bytes) -> bytes:
+            encrypted_calls.append((plaintext, key))
+            return b"ENC"
+
+        self.assertEqual(
+            json.loads(
+                state_db.serialize_entry_value(
+                    "secret://key",
+                    {"accountId": "acct-1"},
+                    aes_key,
+                    encrypt_value_fn=fake_encrypt_value,
+                )
+            ),
+            {"type": "Buffer", "data": [69, 78, 67]},
+        )
+        self.assertEqual(
+            encrypted_calls,
+            [(json.dumps({"accountId": "acct-1"}, ensure_ascii=False), aes_key)],
+        )
+        self.assertEqual(state_db.serialize_entry_value("workbench.colorTheme", {"name": "dark"}, aes_key), '{"name": "dark"}')
+        self.assertEqual(state_db.serialize_entry_value("workbench.items", [1, 2], aes_key), "[1, 2]")
+        self.assertEqual(state_db.serialize_entry_value("workbench.empty", None, aes_key), "")
+
+    def test_secret_key_helpers_and_read_shortcuts(self):
+        self.assertEqual(state_db._extension_id_from_secret_key("window.zoomLevel"), "")
+        self.assertEqual(state_db._extension_id_from_secret_key("secret://{bad-json"), "")
+        self.assertEqual(state_db._extension_id_from_secret_key('secret://{"extensionId": 5, "key": "oauth"}'), "")
+        self.assertEqual(
+            state_db._secret_storage_key("kilocode.kilo-code", "oauth-key"),
+            'secret://{"extensionId":"kilocode.kilo-code","key":"oauth-key"}',
+        )
+        self.assertEqual(state_db._escape_like_fragment("100%_done"), "100\\%\\_done")
+        self.assertEqual(state_db._escape_like_fragment(r"dir\name"), r"dir\\name")
+
+        self.assertEqual(
+            state_db.read_current_accounts(
+                str(self.root / "missing.vscdb"),
+                str(self.root / "Local State"),
+                "oauth-key",
+                get_aes_key_fn=lambda _path: b"aes-key",
+                decode_entry_fn=lambda value, _aes_key: value,
+                account_fingerprint=lambda value: value.get("refresh_token"),
+            ),
+            {},
+        )
+        self.assertEqual(
+            state_db.read_entries_for_extension_ids(
+                str(self.root / "missing.vscdb"),
+                str(self.root / "Local State"),
+                "oauth-key",
+                ["kilocode.kilo-code"],
+                get_aes_key_fn=lambda _path: b"aes-key",
+                decode_entry_fn=lambda value, _aes_key: value,
+            ),
+            [],
+        )
+        self.assertEqual(
+            state_db.read_entries_for_extension_ids(
+                str(self.root / "state.vscdb"),
+                str(self.root / "Local State"),
+                "oauth-key",
+                [],
+                get_aes_key_fn=lambda _path: b"aes-key",
+                decode_entry_fn=lambda value, _aes_key: value,
+            ),
+            [],
+        )
+
+    def test_write_entries_to_db_counts_failures_and_logs_errors(self):
+        messages: list[str] = []
+
+        class FakeConnection:
+            def __init__(self) -> None:
+                self.committed = False
+                self.closed = False
+
+            def execute(self, _query: str, params: tuple[str, str]) -> None:
+                if params[0] == "fail":
+                    raise sqlite3.OperationalError("boom")
+
+            def commit(self) -> None:
+                self.committed = True
+
+            def close(self) -> None:
+                self.closed = True
+
+        connection = FakeConnection()
+
+        with patch("vscode_inject.state_db.sqlite3.connect", return_value=connection):
+            restored, skipped = state_db.write_entries_to_db(
+                "ignored.vscdb",
+                [{"key": "ok", "value": "first"}, {"key": "fail", "value": "second"}],
+                b"aes-key",
+                print_fn=messages.append,
+            )
+
+        self.assertEqual((restored, skipped), (1, 1))
+        self.assertTrue(connection.committed)
+        self.assertTrue(connection.closed)
+        self.assertEqual(messages, ["  [OK] ok", "  [FAIL] fail: boom"])
 
     def test_state_db_write_entries_to_db_preserves_secret_and_plain_contract(self):
-        db_path = self.root / "state.vscdb"
+        db_path = self.root / "state2.vscdb"
         create_state_db(db_path, [])
         encrypted_calls: list[tuple[str, bytes]] = []
 
@@ -140,26 +272,6 @@ class RefactorContractTests(unittest.TestCase):
             {"type": "Buffer", "data": [69, 78, 67]},
         )
         self.assertEqual(rows["workbench.colorTheme"], "Solarized Dark")
-
-    def test_account_services_entry_key_parser_tolerates_non_secret_keys(self):
-        self.assertEqual(account_services._extension_id_from_entry_key("window.zoomLevel"), "")
-        self.assertEqual(state_db._extension_id_from_secret_key("window.zoomLevel"), "")
-        self.assertEqual(
-            account_services._extension_id_from_entry_key(
-                'secret://{"extensionId":"kilocode.kilo-code","key":"openai-codex-oauth-credentials"}'
-            ),
-            "kilocode.kilo-code",
-        )
-
-    def test_entry_key_for_ext_escapes_json_special_characters(self):
-        entry_key = account_services.entry_key_for_ext('roo"\\cline', 'oauth"\\key', 'kilo-new://openai')
-
-        self.assertTrue(entry_key.startswith("secret://"))
-        self.assertEqual(account_services._extension_id_from_entry_key(entry_key), 'roo"\\cline')
-        self.assertEqual(
-            json.loads(entry_key[len("secret://"):]),
-            {"extensionId": 'roo"\\cline', "key": 'oauth"\\key'},
-        )
 
     def test_state_db_decode_entry_uses_late_bound_decrypt_value_by_default(self):
         encrypted_value = json.dumps({"type": "Buffer", "data": [1, 2, 3]})

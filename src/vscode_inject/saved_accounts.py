@@ -5,6 +5,17 @@ import tempfile
 from typing import Mapping, Sequence
 
 
+INVALID_ACCOUNT_NAME_CHARS = '<>:"/\\|?*'
+WINDOWS_RESERVED_ACCOUNT_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
 class SavedAccountKindMismatchError(ValueError):
     def __init__(self, actual_kind: str):
         super().__init__(actual_kind)
@@ -14,6 +25,35 @@ class SavedAccountKindMismatchError(ValueError):
 def ensure_accounts_dir(accounts_dir: str) -> str:
     os.makedirs(accounts_dir, exist_ok=True)
     return accounts_dir
+
+
+def normalize_account_name(name: str) -> str:
+    if not isinstance(name, str):
+        raise ValueError("Account name must be a string.")
+
+    normalized = name.strip()
+    if not normalized:
+        raise ValueError("Account name cannot be empty.")
+    if normalized in {".", ".."}:
+        raise ValueError("Account name cannot be '.' or '..'.")
+    if normalized.endswith((" ", ".")):
+        raise ValueError("Account name cannot end with a space or dot.")
+
+    invalid_chars = sorted({char for char in normalized if char in INVALID_ACCOUNT_NAME_CHARS or ord(char) < 32})
+    if invalid_chars:
+        chars = "".join(repr(char)[1:-1] for char in invalid_chars)
+        raise ValueError(f"Account name contains invalid characters: {chars}")
+
+    reserved_candidate = normalized.split(".", 1)[0].upper()
+    if reserved_candidate in WINDOWS_RESERVED_ACCOUNT_NAMES:
+        raise ValueError(f"Account name '{normalized}' is reserved on Windows.")
+
+    return normalized
+
+
+def saved_account_path(accounts_dir: str, name: str) -> tuple[str, str]:
+    normalized_name = normalize_account_name(name)
+    return os.path.join(ensure_accounts_dir(accounts_dir), f"{normalized_name}.json"), normalized_name
 
 
 def _stage_saved_account_data(path: str, data: dict) -> str:
@@ -153,8 +193,29 @@ def list_saved_accounts(accounts_dir: str, codex_key: str, kind: str | None = No
     return records
 
 
+def resolve_existing_account_path(accounts_dir: str, name: str) -> str:
+    for char in name:
+        if char in '/\\':
+            raise ValueError("Account name contains invalid characters: '/' or '\\'")
+    
+    base_dir = ensure_accounts_dir(accounts_dir)
+    exact_path = os.path.join(base_dir, f"{name}.json")
+    if os.path.isfile(exact_path):
+        return exact_path
+
+    try:
+        norm = normalize_account_name(name)
+        norm_path = os.path.join(base_dir, f"{norm}.json")
+        if os.path.isfile(norm_path):
+            return norm_path
+    except Exception:
+        pass
+
+    return exact_path
+
+
 def load_saved_account(accounts_dir: str, name: str, codex_key: str, expected_kind: str | None = None) -> tuple[str, dict, str]:
-    path = os.path.join(ensure_accounts_dir(accounts_dir), f"{name}.json")
+    path = resolve_existing_account_path(accounts_dir, name)
     if not os.path.exists(path):
         raise FileNotFoundError(name)
 
@@ -167,6 +228,63 @@ def load_saved_account(accounts_dir: str, name: str, codex_key: str, expected_ki
     return path, data, kind
 
 
+def rename_saved_account(
+    accounts_dir: str,
+    codex_key: str,
+    name: str,
+    new_name: str,
+    expected_kind: str | None = None,
+) -> tuple[str, dict, str]:
+    normalized_new_name = normalize_account_name(new_name)
+
+    path = resolve_existing_account_path(accounts_dir, name)
+    if not os.path.exists(path):
+        raise FileNotFoundError(name)
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    kind = saved_account_kind(data, codex_key)
+    if expected_kind and kind != expected_kind:
+        raise SavedAccountKindMismatchError(kind)
+
+    new_path = os.path.join(ensure_accounts_dir(accounts_dir), f"{normalized_new_name}.json")
+    if os.path.exists(new_path) and os.path.abspath(path).lower() != os.path.abspath(new_path).lower():
+        try:
+            with open(new_path, "r", encoding="utf-8") as fh:
+                existing = json.load(fh)
+            existing_kind = saved_account_kind(existing, codex_key)
+        except Exception as exc:
+            raise ValueError(f"Cannot overwrite unreadable account file '{normalized_new_name}.json': {exc}") from exc
+        raise ValueError(
+            f"Account '{normalized_new_name}' already exists as {existing_kind}. Use a different name."
+        )
+
+    if path == new_path:
+        return path, data, kind
+
+    renamed_data = dict(data)
+    renamed_data["name"] = normalized_new_name
+    os.replace(path, new_path)
+    try:
+        write_saved_account_data(new_path, renamed_data)
+    except Exception:
+        try:
+            os.replace(new_path, path)
+        except Exception as rollback_exc:
+            raise RuntimeError(
+                f"Failed to rename saved account '{name}' to '{normalized_new_name}' and rollback cleanly: {rollback_exc}"
+            ) from rollback_exc
+        raise
+
+    return new_path, renamed_data, kind
+
+
+def delete_saved_account(accounts_dir: str, name: str) -> None:
+    path = resolve_existing_account_path(accounts_dir, name)
+    if not os.path.exists(path):
+        raise FileNotFoundError(name)
+    os.remove(path)
+
+
 def write_account_file(
     accounts_dir: str,
     codex_key: str,
@@ -175,8 +293,7 @@ def write_account_file(
     ext_label: str,
     entries: list[dict],
 ) -> str:
-    base_dir = ensure_accounts_dir(accounts_dir)
-    out = os.path.join(base_dir, f"{name}.json")
+    out, normalized_name = saved_account_path(accounts_dir, name)
     if os.path.exists(out):
         try:
             with open(out, encoding="utf-8") as f:
@@ -192,7 +309,7 @@ def write_account_file(
     write_saved_account_data(
         out,
         {
-            "name": name,
+            "name": normalized_name,
             "kind": kind,
             "ext": ext_label,
             "saved_at": datetime.datetime.now().isoformat(),

@@ -9,6 +9,12 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 from urllib import error, parse, request
 
+from .saved_account_status import (
+    REFRESH_STATUS_ERROR,
+    REFRESH_STATUS_OK,
+    REFRESH_STATUS_TERMINAL_ERROR,
+)
+
 
 OPENAI_CODEX_PROVIDER = "openai-codex"
 OPENAI_CODEX_STORAGE_KEY = "openai-codex-oauth-credentials"
@@ -533,7 +539,7 @@ def apply_refreshed_group(
         updated_entry["value"] = apply_refreshed_bundle(value, refreshed_bundle)
         entries[refreshable.entry_index] = updated_entry
         updated_record["last_refreshed_at"] = timestamp
-        updated_record["refresh_status"] = "ok"
+        updated_record["refresh_status"] = REFRESH_STATUS_OK
         updated_record.pop("refresh_error", None)
         updated_record.pop("refresh_error_at", None)
 

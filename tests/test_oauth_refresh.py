@@ -300,7 +300,7 @@ class OAuthRefreshTests(unittest.TestCase):
             bundle,
             refreshed_at="2024-01-02T03:04:05Z",
         )
-        self.assertEqual(updated["alice.json"]["refresh_status"], "ok")
+        self.assertEqual(updated["alice.json"]["refresh_status"], refresh.REFRESH_STATUS_OK)
         self.assertEqual(updated["alice.json"]["last_refreshed_at"], "2024-01-02T03:04:05Z")
         self.assertNotIn("refresh_error", updated["alice.json"])
         self.assertEqual(updated["alice.json"]["entries"][0]["value"]["access_token"], "new-access")
@@ -308,11 +308,11 @@ class OAuthRefreshTests(unittest.TestCase):
         errored = refresh.apply_refresh_error(
             {"alice.json": record},
             group,
-            status="terminal_error",
+            status=refresh.REFRESH_STATUS_TERMINAL_ERROR,
             error_message="invalid_grant",
             error_at="2024-01-02T03:04:05Z",
         )
-        self.assertEqual(errored["alice.json"]["refresh_status"], "terminal_error")
+        self.assertEqual(errored["alice.json"]["refresh_status"], refresh.REFRESH_STATUS_TERMINAL_ERROR)
         self.assertEqual(errored["alice.json"]["refresh_error"], "invalid_grant")
         self.assertEqual(errored["alice.json"]["refresh_error_at"], "2024-01-02T03:04:05Z")
 

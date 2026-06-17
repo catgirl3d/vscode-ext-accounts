@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
 from . import oauth_refresh
+from . import saved_account_status
 
 
 @dataclass(frozen=True)
@@ -160,7 +161,7 @@ class AutoRefreshScheduler:
                     updated_records = oauth_refresh.apply_refresh_error(
                         records_by_path,
                         group,
-                        status="terminal_error",
+                        status=saved_account_status.REFRESH_STATUS_TERMINAL_ERROR,
                         error_message=error_message,
                         error_at=self._now_iso(),
                     )

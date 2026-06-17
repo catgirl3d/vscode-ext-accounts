@@ -550,6 +550,31 @@ def _load_saved_account_data(name: str, expected_kind: str | None = None) -> tup
         ) from exc
 
 
+def rename_saved_account(name: str, new_name: str, expected_kind: str | None = None) -> str:
+    try:
+        with SAVED_ACCOUNT_REFRESH_LOCK:
+            _path, data, _kind = saved_store.rename_saved_account(_accounts_dir(), CODEX_KEY, name, new_name, expected_kind)
+    except FileNotFoundError as exc:
+        raise AccountNotFoundError(f"Account '{name}' not found.") from exc
+    except saved_store.SavedAccountKindMismatchError as exc:
+        raise AccountKindMismatchError(
+            f"Account '{name}' has kind '{exc.actual_kind}', expected '{expected_kind}'."
+        ) from exc
+    except ValueError as exc:
+        raise UserFacingError(str(exc)) from exc
+    return data["name"]
+
+
+def delete_saved_account(name: str) -> None:
+    try:
+        with SAVED_ACCOUNT_REFRESH_LOCK:
+            saved_store.delete_saved_account(_accounts_dir(), name)
+    except FileNotFoundError as exc:
+        raise AccountNotFoundError(f"Account '{name}' not found.") from exc
+    except ValueError as exc:
+        raise UserFacingError(str(exc)) from exc
+
+
 def _saved_codex_entry(data: dict) -> dict | None:
     entries = data.get("entries", []) if isinstance(data, dict) else []
     for entry in entries:
@@ -616,6 +641,7 @@ def refresh_saved_account(name: str) -> str:
         operation_lock=SAVED_ACCOUNT_REFRESH_LOCK,
         load_saved_account_data=_load_saved_account_data,
         oauth_refresh_module=oauth_refresh,
+        is_terminal_refresh_error=oauth_refresh.is_terminal_refresh_error,
         write_saved_account_batch=write_saved_account_batch,
         persist_refreshed_saved_account_batch=persist_refreshed_saved_account_batch,
         saved_account_refresh_error_cls=SavedAccountRefreshError,
