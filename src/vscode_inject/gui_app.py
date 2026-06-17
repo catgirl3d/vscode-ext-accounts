@@ -138,6 +138,7 @@ def main():
     style.theme_use("clam")
     style.configure("Treeview", background="#181825", fieldbackground="#181825", foreground=FG, rowheight=26, font=("Segoe UI", 10))
     style.configure("Treeview.Heading", background=BTN_BG, foreground=FG, font=("Segoe UI", 9, "bold"))
+    style.map("Treeview.Heading", background=[("active", BTN_BG), ("pressed", BTN_BG)], foreground=[("active", FG), ("pressed", FG)])
     style.map("Treeview", background=[("selected", SEL_BG)], foreground=[("selected", SEL_FG)])
     style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
     style.configure(
