@@ -13,6 +13,10 @@ CURRENT_IDE_LABEL_WIDTH = 24
 CODEX_CURRENT_LABEL_WIDTH = 16
 EXPIRED_ROW_TAG = "expired"
 EXPIRED_ROW_FG = "#f38ba8"
+REFRESH_ERROR_ROW_TAG = "refresh_error"
+REFRESH_ERROR_ROW_FG = "#fab387"
+TERMINAL_REFRESH_ERROR_ROW_TAG = "terminal_refresh_error"
+TERMINAL_REFRESH_ERROR_ROW_FG = "#f38ba8"
 
 
 def current_time_ms():
@@ -64,6 +68,25 @@ def expires_row_tags(expires_ms, now_ms=None):
     if is_expired_ms(expires_ms, now_ms=now_ms):
         return (EXPIRED_ROW_TAG,)
     return ()
+
+
+def format_refresh_status(status):
+    if status == "terminal_error":
+        return "invalid"
+    if status == "error":
+        return "error"
+    if status == "ok":
+        return "ok"
+    return "-"
+
+
+def account_row_tags(data, expires_ms, now_ms=None):
+    status = data.get("refresh_status") if isinstance(data, dict) else None
+    if status == "terminal_error":
+        return (TERMINAL_REFRESH_ERROR_ROW_TAG,)
+    if status == "error":
+        return (REFRESH_ERROR_ROW_TAG,)
+    return expires_row_tags(expires_ms, now_ms=now_ms)
 
 
 def shorten_account_id(account_id, limit=12):
@@ -235,7 +258,7 @@ class IdeAccountsTab:
             label.pack(side="left", padx=(8, 0))
             self.current_ide_labels[ext_id] = label
 
-        ide_cols = ("name", "ext", "accountIds", "saved", "expires", "active")
+        ide_cols = ("name", "ext", "accountIds", "saved", "expires", "active", "status")
         self.tree = ttk.Treeview(self.frame, columns=ide_cols, show="headings", height=8, selectmode="browse")
         self.tree.heading("name", text="Name")
         self.tree.heading("ext", text="Ext")
@@ -243,13 +266,17 @@ class IdeAccountsTab:
         self.tree.heading("saved", text="Saved")
         self.tree.heading("expires", text="Expires")
         self.tree.heading("active", text="Active")
+        self.tree.heading("status", text="Status")
         self.tree.column("name", width=110, anchor="w")
         self.tree.column("ext", width=180, anchor="w")
         self.tree.column("accountIds", width=160, anchor="w")
         self.tree.column("saved", width=110, anchor="center")
         self.tree.column("expires", width=80, anchor="center")
         self.tree.column("active", width=90, anchor="center")
+        self.tree.column("status", width=90, anchor="center")
         self.tree.tag_configure(EXPIRED_ROW_TAG, foreground=EXPIRED_ROW_FG)
+        self.tree.tag_configure(REFRESH_ERROR_ROW_TAG, foreground=REFRESH_ERROR_ROW_FG)
+        self.tree.tag_configure(TERMINAL_REFRESH_ERROR_ROW_TAG, foreground=TERMINAL_REFRESH_ERROR_ROW_FG)
         self.tree.pack(padx=10, pady=(0, 6))
 
         self.btn_frame = tk.Frame(self.frame, bg=bg)
@@ -370,6 +397,7 @@ class IdeAccountsTab:
             expires_ms = first_expires_ms(ide_entries)
             expires = format_saved_expires(expires_ms)
             accounts_short = summarize_account_ids(ide_entries)
+            refresh_status = format_refresh_status(data.get("refresh_status"))
 
             active_tags = []
             ide_short = {"vscode": "VS", "antigravity": "AG"}
@@ -397,8 +425,8 @@ class IdeAccountsTab:
                 "",
                 "end",
                 iid=name,
-                values=(name, ext_tag, accounts_short, saved_at, expires, active),
-                tags=expires_row_tags(expires_ms),
+                values=(name, ext_tag, accounts_short, saved_at, expires, active, refresh_status),
+                tags=account_row_tags(data, expires_ms),
             )
 
         self.refresh_runtime_state(force=True)
@@ -536,19 +564,23 @@ class CodexTab:
         self.current_value = tk.Label(current_frame, text="-", bg=bg, fg="#6c7086", font=("Segoe UI", 9))
         self.current_value.pack(side="left")
 
-        cols = ("name", "accountId", "saved", "expires", "active")
+        cols = ("name", "accountId", "saved", "expires", "active", "status")
         self.tree = ttk.Treeview(self.frame, columns=cols, show="headings", height=8, selectmode="browse")
         self.tree.heading("name", text="Name")
         self.tree.heading("accountId", text="Account ID")
         self.tree.heading("saved", text="Saved")
         self.tree.heading("expires", text="Expires")
         self.tree.heading("active", text="Active")
+        self.tree.heading("status", text="Status")
         self.tree.column("name", width=150, anchor="w")
         self.tree.column("accountId", width=180, anchor="w")
         self.tree.column("saved", width=120, anchor="center")
         self.tree.column("expires", width=100, anchor="center")
         self.tree.column("active", width=90, anchor="center")
+        self.tree.column("status", width=90, anchor="center")
         self.tree.tag_configure(EXPIRED_ROW_TAG, foreground=EXPIRED_ROW_FG)
+        self.tree.tag_configure(REFRESH_ERROR_ROW_TAG, foreground=REFRESH_ERROR_ROW_FG)
+        self.tree.tag_configure(TERMINAL_REFRESH_ERROR_ROW_TAG, foreground=TERMINAL_REFRESH_ERROR_ROW_FG)
         self.tree.pack(padx=10, pady=(0, 6))
 
         btn_frame = tk.Frame(self.frame, bg=bg)
@@ -591,7 +623,14 @@ class CodexTab:
             expires_ms = value.get("expires") if isinstance(value.get("expires"), int) else 0
             expires = format_saved_expires(expires_ms)
             active = "active" if current_fp and db.account_fingerprint(value) == current_fp else "-"
-            self.tree.insert("", "end", iid=name, values=(name, account_id, saved_at, expires, active), tags=expires_row_tags(expires_ms))
+            refresh_status = format_refresh_status(data.get("refresh_status"))
+            self.tree.insert(
+                "",
+                "end",
+                iid=name,
+                values=(name, account_id, saved_at, expires, active, refresh_status),
+                tags=account_row_tags(data, expires_ms),
+            )
 
     def on_save(self):
         name = ask_account_name(self.services.root, "Save Codex account", "Account name:")

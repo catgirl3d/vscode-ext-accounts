@@ -1484,7 +1484,7 @@ class ParseVscdbTests(unittest.TestCase):
         with patch.object(
             db.oauth_refresh,
             "refresh_saved_entries",
-            side_effect=db.oauth_refresh.TokenExchangeError("Token refresh failed: 400 invalid_grant"),
+            side_effect=db.oauth_refresh.OAuthRefreshError("network timeout"),
         ) as refresh_saved_entries, patch.object(
             db.oauth_refresh,
             "current_time_iso",
@@ -1494,11 +1494,11 @@ class ParseVscdbTests(unittest.TestCase):
             "write_saved_account_batch",
             side_effect=lambda updates: write_calls.extend(list(updates.items())),
         ):
-            with self.assertRaisesRegex(db.SavedAccountRefreshError, "Refresh failed for 'alice': .*invalid_grant") as exc_info:
+            with self.assertRaisesRegex(db.SavedAccountRefreshError, "Refresh failed for 'alice': network timeout") as exc_info:
                 db.refresh_saved_account("alice")
 
         refresh_saved_entries.assert_called_once_with(account_data["entries"])
-        self.assertIsInstance(exc_info.exception.__cause__, db.oauth_refresh.TokenExchangeError)
+        self.assertIsInstance(exc_info.exception.__cause__, db.oauth_refresh.OAuthRefreshError)
         self.assertEqual(
             write_calls,
             [
@@ -1511,7 +1511,70 @@ class ParseVscdbTests(unittest.TestCase):
                         "entries": account_data["entries"],
                         "last_refreshed_at": "2026-05-15T11:11:11Z",
                         "refresh_status": "error",
-                        "refresh_error": "Token refresh failed: 400 invalid_grant",
+                        "refresh_error": "network timeout",
+                        "refresh_error_at": "2026-05-15T12:00:00Z",
+                    },
+                )
+            ],
+        )
+
+    def test_refresh_saved_account_marks_terminal_auth_errors_invalid(self):
+        account_data = {
+            "name": "alice",
+            "kind": "ide",
+            "saved_at": "2026-05-15T10:00:00",
+            "entries": [
+                {
+                    "key": db.KILO_NEW_KEY,
+                    "value": {
+                        "access_token": "old-access",
+                        "refresh_token": "refresh-1",
+                        "expires": 111,
+                        "accountId": "acct-1",
+                    },
+                }
+            ],
+        }
+        write_calls: list[tuple[str, dict]] = []
+
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: ("alice.json", account_data, "ide"),
+        )
+        with patch.object(
+            db.oauth_refresh,
+            "refresh_saved_entries",
+            side_effect=db.oauth_refresh.TokenExchangeError(
+                "Token refresh failed: 401 invalid_request_error: Your session has ended. Please log in again.",
+                status_code=401,
+                error_code="invalid_request_error",
+                error_description="Your session has ended. Please log in again.",
+                terminal=True,
+            ),
+        ), patch.object(
+            db.oauth_refresh,
+            "current_time_iso",
+            return_value="2026-05-15T12:00:00Z",
+        ), patch.object(
+            db,
+            "write_saved_account_batch",
+            side_effect=lambda updates: write_calls.extend(list(updates.items())),
+        ):
+            with self.assertRaisesRegex(db.SavedAccountRefreshError, "Refresh failed for 'alice': .*401"):
+                db.refresh_saved_account("alice")
+
+        self.assertEqual(
+            write_calls,
+            [
+                (
+                    "alice.json",
+                    {
+                        "name": "alice",
+                        "kind": "ide",
+                        "saved_at": "2026-05-15T10:00:00",
+                        "entries": account_data["entries"],
+                        "refresh_status": "terminal_error",
+                        "refresh_error": "Token refresh failed: 401 invalid_request_error: Your session has ended. Please log in again.",
                         "refresh_error_at": "2026-05-15T12:00:00Z",
                     },
                 )
@@ -1991,6 +2054,22 @@ class GuiTabsHelperTests(unittest.TestCase):
         self.assertEqual(gui_tabs.format_saved_expires(86_400_000, now_ms=1_000), "1970-01-02")
         self.assertEqual(gui_tabs.expires_row_tags(1_000, now_ms=2_000), (EXPIRED_ROW_TAG,))
         self.assertEqual(gui_tabs.expires_row_tags(86_400_000, now_ms=1_000), ())
+        self.assertEqual(gui_tabs.format_refresh_status("terminal_error"), "invalid")
+        self.assertEqual(gui_tabs.format_refresh_status("error"), "error")
+        self.assertEqual(gui_tabs.format_refresh_status("ok"), "ok")
+        self.assertEqual(gui_tabs.format_refresh_status(None), "-")
+        self.assertEqual(
+            gui_tabs.account_row_tags({"refresh_status": "terminal_error"}, 86_400_000, now_ms=1_000),
+            (gui_tabs.TERMINAL_REFRESH_ERROR_ROW_TAG,),
+        )
+        self.assertEqual(
+            gui_tabs.account_row_tags({"refresh_status": "error"}, 86_400_000, now_ms=1_000),
+            (gui_tabs.REFRESH_ERROR_ROW_TAG,),
+        )
+        self.assertEqual(
+            gui_tabs.account_row_tags({}, 1_000, now_ms=2_000),
+            (EXPIRED_ROW_TAG,),
+        )
         self.assertEqual(gui_tabs.shorten_account_id("abcdefghijklmnop", limit=8), "abcdefgh...")
         self.assertEqual(gui_tabs.shorten_account_id(None), "?")
 
@@ -2243,6 +2322,35 @@ class IdeAccountsTabTests(unittest.TestCase):
 
         self.assertEqual(tab.tree.item("expired_ide", "tags"), (EXPIRED_ROW_TAG,))
         self.assertEqual(tab.tree.item("expired_ide", "values")[4], "expired")
+
+    def test_refresh_marks_invalid_ide_rows_from_terminal_refresh_errors(self):
+        db_module = self.make_db(running=False)
+        db_module.list_saved_accounts = lambda kind: [
+            {
+                "name": "invalid_ide",
+                "data": {
+                    "ext": "kilocode",
+                    "saved_at": "2026-05-15T10:00:00",
+                    "refresh_status": "terminal_error",
+                    "entries": [
+                        {
+                            "key": db_module.IDE_EXTENSIONS["kilocode"],
+                            "value": {
+                                "accountId": "acct-1",
+                                "expires": 86_400_000,
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, self.make_services(db_module))
+
+        tab.refresh()
+
+        self.assertEqual(tab.tree.item("invalid_ide", "tags"), (gui_tabs.TERMINAL_REFRESH_ERROR_ROW_TAG,))
+        self.assertEqual(tab.tree.item("invalid_ide", "values")[6], "invalid")
 
     def test_helper_methods_cover_selection_labels_and_current_account_rendering(self):
         db_module = self.make_db(running=False)
@@ -2549,6 +2657,41 @@ class CodexTabTests(unittest.TestCase):
 
         self.assertEqual(tab.tree.item("expired_codex", "tags"), (EXPIRED_ROW_TAG,))
         self.assertEqual(tab.tree.item("expired_codex", "values")[3], "expired")
+
+    def test_refresh_marks_failed_codex_rows_with_error_status(self):
+        db_module = SimpleNamespace(
+            CODEX_AUTH_PATH="C:/Users/Test/.codex/auth.json",
+            CODEX_KEY="codex://openai",
+            read_current_codex_account=lambda: {},
+            list_saved_accounts=lambda kind: [
+                {
+                    "name": "errored_codex",
+                    "data": {
+                        "saved_at": "2026-05-15T10:00:00",
+                        "refresh_status": "error",
+                        "entries": [
+                            {
+                                "key": "codex://openai",
+                                "value": {
+                                    "accountId": "acct-codex",
+                                    "expires": 86_400_000,
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            account_fingerprint=lambda value: None,
+            refresh_saved_account=Mock(name="refresh_saved_account"),
+        )
+        services = self.make_services(db_module)
+        notebook = ttk.Notebook(self.root)
+        tab = CodexTab(notebook, services)
+
+        tab.refresh()
+
+        self.assertEqual(tab.tree.item("errored_codex", "tags"), (gui_tabs.REFRESH_ERROR_ROW_TAG,))
+        self.assertEqual(tab.tree.item("errored_codex", "values")[5], "error")
 
     def test_update_current_label_refresh_and_handlers_cover_remaining_codex_branches(self):
         db_module = SimpleNamespace(

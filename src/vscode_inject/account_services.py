@@ -217,7 +217,9 @@ def refresh_saved_account(
         try:
             refreshed = oauth_refresh_module.refresh_saved_entries(entries)
         except oauth_refresh_module.OAuthRefreshError as exc:
-            updated_data["refresh_status"] = "error"
+            updated_data["refresh_status"] = (
+                "terminal_error" if oauth_refresh_module.is_terminal_refresh_error(exc) else "error"
+            )
             updated_data["refresh_error"] = str(exc)
             updated_data["refresh_error_at"] = oauth_refresh_module.current_time_iso()
             write_saved_account_batch({path: updated_data})
