@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import queue
 import sqlite3
 import sys
@@ -27,6 +28,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from vscode_inject import parse_vscdb as db
+from vscode_inject import gui_tabs
 from vscode_inject.gui_app import (
     AUTO_REFRESH_START_DELAY_MS,
     POLL_INTERVAL_MS,
@@ -1676,6 +1678,361 @@ class ParseVscdbTests(unittest.TestCase):
         self.assertIn("Refreshed saved account 'alice', but failed to persist the new credentials locally: disk full.", message)
         self.assertIn("manual sign-in may be required", message)
 
+    def test_read_current_accounts_for_vscode_does_not_merge_kilo_new_auth(self):
+        read_calls: list[tuple[str | None, str | None]] = []
+
+        self.patch_db(
+            "IDE_PATHS",
+            {
+                "vscode": {
+                    "label": "VSCode",
+                    "db": "db-vscode",
+                    "local_state": "local-vscode",
+                    "process": "Code.exe",
+                }
+            },
+        )
+        self.patch_db(
+            "read_current_accounts",
+            lambda db_path=None, local_state_path=None: read_calls.append((db_path, local_state_path))
+            or {"kilocode.kilo-code": {"accountId": "acct-vscode"}},
+        )
+        self.patch_db(
+            "read_current_kilo_new_account",
+            lambda: (_ for _ in ()).throw(AssertionError("Kilo New auth should not be read for VSCode")),
+        )
+
+        accounts = db.read_current_accounts_for_ide("vscode")
+
+        self.assertEqual(accounts, {"kilocode.kilo-code": {"accountId": "acct-vscode"}})
+        self.assertEqual(read_calls, [("db-vscode", "local-vscode")])
+
+    def test_restore_default_path_creates_safety_backup_before_apply(self):
+        db_path = self.root / "restore_default.vscdb"
+        create_state_db(db_path, [])
+        backup_path = self.root / "restore_default.json"
+        entries = [{"key": "workbench.colorTheme", "value": "Solarized Dark"}]
+        self.write_json(backup_path, {"entries": entries})
+
+        backup_calls: list[dict[str, object]] = []
+        apply_calls: list[dict[str, object]] = []
+        guard_calls: list[str] = []
+
+        self.patch_db("DB_PATH", str(db_path))
+        self.patch_db("CURRENT_IDE", "vscode")
+        self.patch_db(
+            "IDE_PATHS",
+            {
+                "vscode": {
+                    "label": "VSCode",
+                    "db": str(db_path),
+                    "local_state": str(self.root / "Local State"),
+                    "process": "Code.exe",
+                }
+            },
+        )
+        self.patch_db("guard_vscode_closed", lambda: guard_calls.append("guard"))
+        self.patch_db("get_aes_key", lambda local_state_path=None: b"aes-key")
+        self.patch_db("create_prewrite_backup", lambda **kwargs: backup_calls.append(kwargs))
+        self.patch_db(
+            "_apply_entries_to_current_db",
+            lambda entries, *, source_label, aes_key=None: apply_calls.append(
+                {"entries": list(entries), "source_label": source_label, "aes_key": aes_key}
+            ),
+        )
+
+        output = self.capture_output(db.restore, str(backup_path))
+
+        self.assertEqual(guard_calls, ["guard"])
+        self.assertEqual(
+            backup_calls,
+            [{"include_db": True, "note": f"before restore from {backup_path.name}"}],
+        )
+        self.assertEqual(
+            apply_calls,
+            [{"entries": entries, "source_label": str(backup_path), "aes_key": b"aes-key"}],
+        )
+        self.assertEqual(output, "\n")
+
+    def test_guard_vscode_closed_raises_user_facing_error_with_selected_ide_label(self):
+        self.patch_db("CURRENT_IDE", "antigravity")
+        self.patch_db(
+            "IDE_PATHS",
+            {"antigravity": {"label": "Antigravity", "db": "db", "local_state": "local", "process": "Antigravity.exe"}},
+        )
+        self.patch_db("is_ide_running", lambda ide=None: True)
+
+        with self.assertRaisesRegex(db.UserFacingError, "Antigravity is running"):
+            db.guard_vscode_closed()
+
+    def test_create_prewrite_backup_returns_none_when_no_targets_are_requested(self):
+        self.patch_db("_prewrite_backup_targets", lambda **kwargs: [])
+
+        self.assertIsNone(db.create_prewrite_backup())
+
+    def test_write_entries_to_current_db_validates_missing_db_and_aes_key(self):
+        self.patch_db("DB_PATH", str(self.root / "missing.vscdb"))
+        with self.assertRaisesRegex(db.UserFacingError, "DB not found"):
+            db._write_entries_to_current_db([{"key": "k", "value": "v"}])
+
+        db_path = self.root / "write_entries.vscdb"
+        create_state_db(db_path, [])
+        self.patch_db("DB_PATH", str(db_path))
+        self.patch_db("get_aes_key", lambda local_state_path=None: None)
+
+        with self.assertRaisesRegex(db.UserFacingError, "Cannot get AES key"):
+            db._write_entries_to_current_db([{"key": "k", "value": "v"}])
+
+    def test_apply_entries_to_current_db_prints_progress_and_uses_default_aes_flow(self):
+        self.patch_db("DB_PATH", str(self.root / "progress.vscdb"))
+        self.patch_db("CURRENT_IDE", "vscode")
+        self.patch_db("IDE_PATHS", {"vscode": {"label": "VSCode"}})
+        captured: dict[str, object] = {}
+
+        self.patch_db(
+            "_write_entries_to_current_db",
+            lambda entries, *, aes_key=None: captured.update({"entries": list(entries), "aes_key": aes_key}) or (len(entries), 0),
+        )
+
+        output = self.capture_output(
+            db._apply_entries_to_current_db,
+            [{"key": "workbench.colorTheme", "value": "Solarized Dark"}],
+            source_label="backup.json",
+        )
+
+        self.assertEqual(captured["aes_key"], None)
+        self.assertIn("Backup: backup.json", output)
+        self.assertIn("Entries to restore: 1", output)
+        self.assertIn("Target DB:", output)
+        self.assertIn("Restored: 1  Skipped: 0", output)
+
+    def test_facade_helpers_delegate_to_storage_modules(self):
+        self.patch_db("PROJECT_ROOT", str(self.root))
+        self.patch_db("CURRENT_IDE", "vscode")
+        self.patch_db("KILO_AUTH_PATH", "C:/Users/Test/.local/share/kilo/auth.json")
+        self.patch_db("CODEX_AUTH_PATH", "C:/Users/Test/.codex/auth.json")
+
+        with patch.object(db.backups, "backups_dir", return_value="backups") as backups_dir, patch.object(
+            db.backups, "refresh_recovery_dir", return_value="recovery"
+        ) as refresh_recovery_dir, patch.object(
+            db.backups, "default_backup_zip_path", return_value="backup.zip"
+        ) as default_backup_zip_path, patch.object(
+            db.backups, "full_backup_targets", return_value=[{"source": "db"}]
+        ) as full_backup_targets, patch.object(
+            db.backups, "prewrite_backup_targets", return_value=[{"source": "db"}]
+        ) as prewrite_backup_targets:
+            self.assertEqual(db._backups_dir(), "backups")
+            self.assertEqual(db._refresh_recovery_dir(), "recovery")
+            self.assertEqual(db._default_backup_zip_path("prewrite"), "backup.zip")
+            self.assertEqual(db._full_backup_targets(), [{"source": "db"}])
+            self.assertEqual(
+                db._prewrite_backup_targets(include_db=True, include_kilo=False, include_codex=True),
+                [{"source": "db"}],
+            )
+
+        with patch.object(db.saved_store, "saved_account_kind", return_value="codex") as saved_account_kind, patch.object(
+            db.saved_store, "list_saved_accounts", return_value=[{"name": "alice"}]
+        ) as list_saved_accounts, patch.object(db.saved_store, "write_saved_account_batch") as write_saved_account_batch:
+            self.assertEqual(db.saved_account_kind({"entries": []}), "codex")
+            self.assertEqual(db.list_saved_accounts("ide"), [{"name": "alice"}])
+            db.write_saved_account_batch({"alice.json": {"entries": []}})
+            saved_account_kind.assert_called_once_with({"entries": []}, db.CODEX_KEY)
+            list_saved_accounts.assert_called_once_with(db._accounts_dir(), db.CODEX_KEY, "ide")
+            write_saved_account_batch.assert_called_once_with({"alice.json": {"entries": []}})
+
+        with patch.object(db.backups, "normalize_saved_account_updates", return_value=[("alice.json", {"entries": []})]) as normalize_updates, patch.object(
+            db.backups, "write_refresh_recovery_snapshot", return_value="snapshot.json"
+        ) as write_snapshot, patch.object(db.backups, "cleanup_refresh_recovery_snapshot") as cleanup_snapshot, patch.object(
+            db.backups, "refreshed_credentials_persistence_message", return_value="persistence message"
+        ) as persistence_message:
+            self.assertEqual(db._normalize_saved_account_updates({"alice.json": {"entries": []}}), [("alice.json", {"entries": []})])
+            self.assertEqual(
+                db._write_refresh_recovery_snapshot(
+                    {"alice.json": {"entries": []}},
+                    subject_label="saved account 'alice'",
+                    account_names=("alice",),
+                    providers=(db.oauth_refresh.OPENAI_CODEX_PROVIDER,),
+                    operation="manual-refresh",
+                    created_at="2026-05-17T11:00:00Z",
+                ),
+                "snapshot.json",
+            )
+            db._cleanup_refresh_recovery_snapshot("snapshot.json")
+            self.assertEqual(
+                db._refreshed_credentials_persistence_message(
+                    subject_label="saved account 'alice'",
+                    save_error=OSError("disk full"),
+                    recovery_path="snapshot.json",
+                    recovery_error=None,
+                ),
+                "persistence message",
+            )
+            normalize_updates.assert_called_once()
+            write_snapshot.assert_called_once()
+            cleanup_snapshot.assert_called_once_with("snapshot.json")
+            persistence_message.assert_called_once()
+
+        with patch.object(db.codex_store, "read_codex_auth", return_value={"tokens": {}}) as read_codex_auth, patch.object(
+            db.codex_store, "write_codex_auth"
+        ) as write_codex_auth, patch.object(
+            db.codex_store, "to_codex_format", return_value={"formatted": True}
+        ) as to_codex_format, patch.object(
+            db.codex_store, "from_codex_format", return_value={"parsed": True}
+        ) as from_codex_format, patch.object(
+            db.codex_store, "read_current_codex_account", return_value={db.CODEX_KEY: {"accountId": "acct-codex"}}
+        ) as read_current_codex_account, patch.object(
+            db.kilo_new_accounts, "read_kilo_auth", return_value={"openai": {}}
+        ) as read_kilo_auth, patch.object(
+            db.kilo_new_accounts, "write_kilo_auth"
+        ) as write_kilo_auth, patch.object(
+            db.kilo_new_accounts, "to_kilo_new_format", return_value={"type": "oauth"}
+        ) as to_kilo_new_format, patch.object(
+            db.kilo_new_accounts, "from_kilo_new_format", return_value={"type": "openai-codex"}
+        ) as from_kilo_new_format, patch.object(
+            db.kilo_new_accounts, "read_current_kilo_new_account", return_value={db.KILO_NEW_KEY: {"accountId": "acct-kilo"}}
+        ) as read_current_kilo_new_account:
+            self.assertEqual(db._read_codex_auth(), {"tokens": {}})
+            db._write_codex_auth({"tokens": {"account_id": "acct-codex"}})
+            self.assertEqual(db._to_codex_format({"accountId": "acct-codex"}), {"formatted": True})
+            self.assertEqual(db._from_codex_format({"tokens": {}}), {"parsed": True})
+            self.assertEqual(db._read_kilo_auth(), {"openai": {}})
+            db._write_kilo_auth({"openai": {"refresh": "refresh-1"}})
+            self.assertEqual(db._to_kilo_new_format({"accountId": "acct-kilo"}), {"type": "oauth"})
+            self.assertEqual(db._from_kilo_new_format({"openai": {}}), {"type": "openai-codex"})
+            self.assertEqual(db.read_current_codex_account(), {db.CODEX_KEY: {"accountId": "acct-codex"}})
+            self.assertEqual(db.read_current_kilo_new_account(), {db.KILO_NEW_KEY: {"accountId": "acct-kilo"}})
+            read_codex_auth.assert_called_once_with(db.CODEX_AUTH_PATH)
+            write_codex_auth.assert_called_once_with(db.CODEX_AUTH_PATH, {"tokens": {"account_id": "acct-codex"}})
+            to_codex_format.assert_called_once_with({"accountId": "acct-codex"}, None)
+            from_codex_format.assert_called_once_with({"tokens": {}})
+            read_kilo_auth.assert_called_once_with(db.KILO_AUTH_PATH)
+            write_kilo_auth.assert_called_once_with(db.KILO_AUTH_PATH, {"openai": {"refresh": "refresh-1"}})
+            to_kilo_new_format.assert_called_once_with({"accountId": "acct-kilo"})
+            from_kilo_new_format.assert_called_once_with({"openai": {}})
+            read_current_codex_account.assert_called_once_with(db.CODEX_AUTH_PATH, db.CODEX_KEY, db.account_fingerprint)
+            read_current_kilo_new_account.assert_called_once_with(db.KILO_AUTH_PATH, db.KILO_NEW_KEY, db.account_fingerprint)
+
+        self.assertIsNone(db._saved_codex_entry({"entries": [{"key": "other"}]}))
+
+    def test_parse_vscdb_main_raises_cli_removed_message(self):
+        with self.assertRaisesRegex(SystemExit, "CLI support removed"):
+            db.main()
+
+    def test_restore_validates_missing_paths_and_empty_backups(self):
+        db_path = self.root / "restore_checks.vscdb"
+        create_state_db(db_path, [])
+        self.patch_db("DB_PATH", str(db_path))
+
+        with self.assertRaisesRegex(db.UserFacingError, "Backup file not found"):
+            db.restore(str(self.root / "missing.json"), create_safety_backup=False)
+
+        backup_path = self.root / "restore_checks.json"
+        self.write_json(backup_path, {"entries": [{"key": "workbench.colorTheme", "value": "Dark"}]})
+        self.patch_db("DB_PATH", str(self.root / "missing.vscdb"))
+        with self.assertRaisesRegex(db.UserFacingError, "DB not found"):
+            db.restore(str(backup_path), create_safety_backup=False)
+
+        self.patch_db("DB_PATH", str(db_path))
+        self.write_json(backup_path, {"entries": []})
+        with self.assertRaisesRegex(db.UserFacingError, "No entries in backup"):
+            db.restore(str(backup_path), create_safety_backup=False)
+
+    def test_backup_message_and_passthrough_helpers_cover_remaining_facade_branches(self):
+        with patch.object(db, "_create_backup_archive", return_value={"included": 1, "total": 2, "required_missing": ["missing"], "optional_missing": []}), patch.object(
+            db, "_full_backup_targets", return_value=[]
+        ):
+            message = db.backup()
+        self.assertIn("Warning: 1 required file(s) were missing.", message)
+
+        with patch.object(db.ide_context, "dedupe_candidate_paths", return_value=["deduped"]) as dedupe_candidate_paths, patch.object(
+            db.state_db, "get_aes_key", return_value=b"aes-key"
+        ) as get_aes_key, patch.object(
+            db.ide_context, "is_ide_running", return_value=True
+        ) as is_ide_running, patch.object(
+            db.account_services, "is_kilo_new", return_value=True
+        ) as is_kilo_new, patch.object(
+            db.account_services, "ide_db_extension_names", return_value=["kilocode", "roo-cline"]
+        ) as ide_db_extension_names, patch.object(
+            db.account_services, "read_current_ide_entries_for_selection", return_value=[{"key": "entry"}]
+        ) as read_current_ide_entries_for_selection, patch.object(
+            db, "_ide_context_for", return_value=SimpleNamespace(name="vscode", label="VSCode")
+        ):
+            self.patch_db("LOCAL_STATE_PATH", "local-state.json")
+            self.assertEqual(db._dedupe_candidate_paths(["a", "a"]), ["deduped"])
+            self.assertEqual(db.get_aes_key(), b"aes-key")
+            self.assertTrue(db.is_ide_running("vscode"))
+            self.assertTrue(db._is_kilo_new(db.KILO_NEW_KEY))
+            self.assertEqual(db._ide_db_extension_names(), ["kilocode", "roo-cline"])
+            self.assertEqual(db._read_current_ide_entries_for_selection(["kilocode", "kilo-new"]), [{"key": "entry"}])
+
+        dedupe_candidate_paths.assert_called_once_with(["a", "a"])
+        get_aes_key.assert_called_once_with("local-state.json")
+        is_ide_running.assert_called_once()
+        is_kilo_new.assert_called_once_with(db.KILO_NEW_KEY, db.KILO_NEW_KEY)
+        ide_db_extension_names.assert_called_once_with(db.IDE_EXTENSIONS, db.KILO_NEW_KEY)
+        read_current_ide_entries_for_selection.assert_called_once()
+
+
+class GuiTabsHelperTests(unittest.TestCase):
+    def test_formatting_and_selection_helpers_cover_edge_cases(self):
+        self.assertIsInstance(gui_tabs.current_time_ms(), int)
+        self.assertEqual(gui_tabs.format_saved_at({}), "?")
+        self.assertEqual(gui_tabs.format_saved_at({"saved_at": "2026-05-17T11:18:00"}), "2026-05-17 11:18")
+        self.assertEqual(gui_tabs.format_expires_ms(0), "")
+        self.assertEqual(gui_tabs.format_expires_ms(86_400_000), "1970-01-02")
+        with patch("vscode_inject.gui_tabs.datetime.datetime") as fake_datetime:
+            fake_datetime.fromtimestamp.side_effect = RuntimeError("bad timestamp")
+            self.assertEqual(gui_tabs.format_expires_ms(86_400_000), "")
+
+        self.assertFalse(gui_tabs.is_expired_ms("bad"))
+        self.assertFalse(gui_tabs.is_expired_ms(2_000, now_ms=1_000))
+        self.assertTrue(gui_tabs.is_expired_ms(1_000, now_ms=2_000))
+        self.assertEqual(gui_tabs.format_saved_expires(1_000, now_ms=2_000), "expired")
+        self.assertEqual(gui_tabs.format_saved_expires(86_400_000, now_ms=1_000), "1970-01-02")
+        self.assertEqual(gui_tabs.expires_row_tags(1_000, now_ms=2_000), (EXPIRED_ROW_TAG,))
+        self.assertEqual(gui_tabs.expires_row_tags(86_400_000, now_ms=1_000), ())
+        self.assertEqual(gui_tabs.shorten_account_id("abcdefghijklmnop", limit=8), "abcdefgh...")
+        self.assertEqual(gui_tabs.shorten_account_id(None), "?")
+
+        entries = [
+            {"key": "skip-me", "value": {"accountId": "acct-skip"}},
+            {"key": "keep-me", "value": {"accountId": "acct-keep-123456"}},
+            {"key": "no-id", "value": {}},
+        ]
+        self.assertEqual(gui_tabs.summarize_account_ids(entries, skip_keys={"skip-me"}), "acct-kee...")
+        self.assertEqual(gui_tabs.summarize_account_ids([{"key": "no-id", "value": {}}]), "?")
+        self.assertEqual(gui_tabs.first_expires_ms(entries, skip_keys={"skip-me"}), 0)
+        self.assertEqual(
+            gui_tabs.first_expires_ms(
+                [
+                    {"key": "a", "value": {"expires": 5_000}},
+                    {"key": "b", "value": {"expires": 2_000}},
+                ]
+            ),
+            2_000,
+        )
+        with patch("vscode_inject.gui_tabs.current_time_ms", return_value=0):
+            self.assertEqual(gui_tabs.first_expires([{"key": "a", "value": {"expires": 1_000}}]), "1970-01-01")
+
+        tree = Mock()
+        tree.selection.return_value = ()
+        with patch("vscode_inject.gui_tabs.messagebox.showwarning") as showwarning:
+            self.assertIsNone(gui_tabs.selected_name(tree, "Pick something"))
+        showwarning.assert_called_once_with("No selection", "Pick something")
+
+        tree.selection.return_value = ("alice", "bob")
+        self.assertEqual(gui_tabs.selected_name(tree, "Pick something"), "alice")
+
+        with patch("vscode_inject.gui_tabs.simpledialog.askstring", return_value=None):
+            self.assertIsNone(gui_tabs.ask_account_name(Mock(), "Save", "Name"))
+        with patch("vscode_inject.gui_tabs.simpledialog.askstring", return_value="alice account"):
+            self.assertEqual(gui_tabs.ask_account_name(Mock(), "Save", "Name"), "alice_account")
+
+        db_module = SimpleNamespace(_accounts_dir=lambda: "C:/accounts")
+        with patch("vscode_inject.gui_tabs.os.remove") as remove:
+            gui_tabs.delete_saved_account(db_module, "alice")
+        remove.assert_called_once_with(os.path.join("C:/accounts", "alice.json"))
+
 
 class IdeAccountsTabTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1696,8 +2053,10 @@ class IdeAccountsTabTests(unittest.TestCase):
             "roo-cline": "rooveterinaryinc.roo-cline",
             "kilo-new": "kilo-new://openai",
         }
+        save_ide_account = Mock(name="save_ide_account")
         use_ide_account = Mock(name="use_ide_account")
         refresh_saved_account = Mock(name="refresh_saved_account")
+        backup = Mock(name="backup")
 
         return SimpleNamespace(
             IDE_EXTENSIONS=ide_extensions,
@@ -1715,8 +2074,10 @@ class IdeAccountsTabTests(unittest.TestCase):
             account_fingerprint=lambda value: None,
             is_ide_running=lambda ide=None: running_state[ide or "vscode"],
             set_ide=lambda name: None,
+            save_ide_account=save_ide_account,
             use_ide_account=use_ide_account,
             refresh_saved_account=refresh_saved_account,
+            backup=backup,
             launch_ide=lambda ide=None: f"Started {ide or 'vscode'}",
         )
 
@@ -1883,6 +2244,236 @@ class IdeAccountsTabTests(unittest.TestCase):
         self.assertEqual(tab.tree.item("expired_ide", "tags"), (EXPIRED_ROW_TAG,))
         self.assertEqual(tab.tree.item("expired_ide", "values")[4], "expired")
 
+    def test_helper_methods_cover_selection_labels_and_current_account_rendering(self):
+        db_module = self.make_db(running=False)
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, self.make_services(db_module))
+
+        with patch("vscode_inject.gui_tabs.messagebox.showwarning") as showwarning:
+            self.assertEqual(tab.selected_exts(), [])
+        showwarning.assert_called_once_with("No extension", "Select at least one IDE extension.")
+        self.assertEqual(tab.selected_exts(show_warning=False), [])
+
+        tab.ide_ext_vars["kilocode"].set(True)
+        tab.ide_ext_vars["kilo-new"].set(True)
+        self.assertEqual(tab.selected_exts(), ["kilocode", "kilo-new"])
+        self.assertEqual(tab.format_ext_selection(["kilocode", "kilo-new"]), "kilocode+kilo-new")
+        self.assertEqual(tab.db_target_ides_for_exts(["kilocode"]), ["vscode"])
+        self.assertEqual(tab.db_target_ides_for_exts(["kilo-new"]), [])
+        self.assertEqual(tab.kilo_new_target_ides_for_exts(["kilo-new"]), ["vscode", "antigravity"])
+        self.assertTrue(tab.can_hot_swap_kilo_new(["kilo-new"], [], ["antigravity"]))
+        self.assertFalse(tab.can_hot_swap_kilo_new(["kilo-new"], ["antigravity"], ["antigravity"]))
+        self.assertEqual(tab.required_closed_ides_for_exts(["kilocode", "kilo-new"]), ["vscode", "antigravity"])
+        self.assertEqual(
+            tab.required_closed_ides_for_exts(["kilocode", "kilo-new"], allow_kilo_new_while_running=True),
+            ["vscode"],
+        )
+        self.assertEqual(tab.format_ide_labels([]), "")
+        self.assertEqual(tab.format_ide_labels(["vscode"]), "VSCode")
+        self.assertEqual(tab.format_ide_labels(["vscode", "antigravity"]), "VSCode and Antigravity")
+
+        tab.update_current_labels({"kilocode.kilo-code": {"accountId": "acct-kilo-1234567890"}})
+
+        self.assertEqual(tab.current_ide_label.cget("text"), "Current in VSCode:")
+        self.assertIn("kilocode:", tab.current_ide_labels["kilocode.kilo-code"].cget("text"))
+        self.assertTrue(tab.current_ide_labels["kilocode.kilo-code"].cget("text").endswith("..."))
+        self.assertEqual(tab.current_ide_labels["rooveterinaryinc.roo-cline"].cget("text"), "  roo-cline: -")
+
+    def test_refresh_runtime_state_hides_visible_run_button_when_ide_starts_running(self):
+        running_state = {"vscode": False, "antigravity": False}
+        db_module = self.make_db(running=False)
+        db_module.is_ide_running = lambda ide=None: running_state[ide or "vscode"]
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, self.make_services(db_module))
+
+        tab.refresh()
+        self.root.update_idletasks()
+        self.assertEqual(tab.run_button.winfo_manager(), "pack")
+        self.assertTrue(tab.run_button_visible)
+
+        running_state["vscode"] = True
+        changed = tab.refresh_runtime_state(force=True)
+        self.root.update_idletasks()
+
+        self.assertTrue(changed)
+        self.assertEqual(tab.run_button.winfo_manager(), "")
+        self.assertFalse(tab.run_button_visible)
+
+    def test_refresh_survives_backend_errors_and_marks_active_targets(self):
+        db_module = self.make_db(running=False)
+        db_module.list_saved_accounts = lambda kind: [
+            {
+                "name": "alice",
+                "data": {
+                    "ext": "kilocode",
+                    "saved_at": "2026-05-17T11:18:00",
+                    "entries": [
+                        {
+                            "key": db_module.IDE_EXTENSIONS["kilocode"],
+                            "value": {
+                                "accountId": "acct-kilo-1234567890",
+                                "refresh_token": "refresh-match",
+                                "expires": 86_400_000,
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+        db_module.account_fingerprint = lambda value: value.get("refresh_token")
+        db_module.match_saved_to_current = lambda entries, current_accounts: ["kilocode"] if current_accounts else []
+
+        failing_db_module = self.make_db(running=False)
+        failing_db_module.list_saved_accounts = db_module.list_saved_accounts
+        failing_db_module.read_current_accounts_for_ide = lambda ide: (_ for _ in ()).throw(RuntimeError(f"{ide} unavailable"))
+        failing_db_module.get_kilo_new_fingerprint = lambda: (_ for _ in ()).throw(RuntimeError("kilo unavailable"))
+        notebook = ttk.Notebook(self.root)
+        failing_tab = IdeAccountsTab(notebook, self.make_services(failing_db_module))
+
+        failing_tab.refresh()
+
+        self.assertEqual(failing_tab.tree.item("alice", "values")[5], "-")
+
+        db_module.read_current_accounts_for_ide = lambda ide: {
+            "kilocode.kilo-code": {"accountId": "acct-live", "fingerprint": "refresh-match"}
+        }
+        db_module.get_kilo_new_fingerprint = lambda: "refresh-match"
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, self.make_services(db_module))
+
+        tab.refresh()
+
+        values = tab.tree.item("alice", "values")
+        self.assertEqual(values[5], "VS+AG+KN")
+        self.assertEqual(values[2], "acct-kil...")
+
+    def test_on_ide_change_and_save_handlers_delegate_correctly(self):
+        db_module = self.make_db(running=False)
+        db_module.set_ide = Mock()
+        services = self.make_services(db_module)
+        services.run_guarded = Mock()
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, services)
+
+        with patch.object(tab, "refresh") as refresh:
+            tab.on_ide_change()
+        db_module.set_ide.assert_called_once_with("vscode")
+        refresh.assert_called_once_with()
+
+        with patch("vscode_inject.gui_tabs.ask_account_name", return_value=None):
+            tab.on_save()
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.ask_account_name", return_value="alice"), patch.object(tab, "selected_exts", return_value=[]):
+            tab.on_save()
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.ask_account_name", return_value="alice"), patch.object(
+            tab, "selected_exts", return_value=["kilocode", "roo-cline"]
+        ):
+            tab.on_save()
+
+        services.run_guarded.assert_called_once_with(
+            db_module.save_ide_account,
+            "alice",
+            ["kilocode", "roo-cline"],
+            success_msg="Saved 'alice' [kilocode+roo-cline]",
+        )
+
+    def test_on_use_delete_backup_refresh_and_run_handlers_cover_branches(self):
+        db_module = self.make_db(running=False)
+        services = self.make_services(db_module)
+        services.run_guarded = Mock()
+        services.set_status = Mock()
+        services.refresh_all = Mock()
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, services)
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value=None):
+            tab.on_use()
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch.object(tab, "selected_exts", return_value=[]):
+            tab.on_use()
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch.object(
+            tab, "selected_exts", return_value=["kilocode"]
+        ), patch("vscode_inject.gui_tabs.messagebox.askyesno", return_value=False) as askyesno:
+            tab.on_use()
+        askyesno.assert_called_once_with("Switch IDE account", "Switch 'alice' [kilocode]?\nVSCode must stay closed until done.")
+        services.run_guarded.assert_not_called()
+
+        db_module.is_ide_running = lambda ide=None: True
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch.object(
+            tab, "selected_exts", return_value=["kilo-new"]
+        ), patch.object(tab, "can_hot_swap_kilo_new", return_value=False), patch(
+            "vscode_inject.gui_tabs.messagebox.showerror"
+        ) as showerror:
+            tab.on_use()
+        showerror.assert_called_once_with(
+            "VSCode and Antigravity running",
+            "Close VSCode and Antigravity before switching accounts.",
+        )
+        services.run_guarded.assert_not_called()
+        db_module.is_ide_running = lambda ide=None: False
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value=None):
+            tab.on_delete()
+        services.set_status.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=False
+        ) as askyesno, patch("vscode_inject.gui_tabs.delete_saved_account") as delete_saved_account:
+            tab.on_delete()
+        askyesno.assert_called_once_with("Delete", "Delete saved account 'alice'?")
+        delete_saved_account.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
+        ), patch("vscode_inject.gui_tabs.delete_saved_account") as delete_saved_account:
+            tab.on_delete()
+        delete_saved_account.assert_called_once_with(db_module, "alice")
+        services.set_status.assert_called_once_with("Deleted 'alice'", True)
+        services.refresh_all.assert_called_once_with()
+
+        services.set_status.reset_mock()
+        services.refresh_all.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
+        ), patch("vscode_inject.gui_tabs.delete_saved_account", side_effect=OSError("delete failed")):
+            tab.on_delete()
+        services.set_status.assert_called_once_with("delete failed", False)
+        services.refresh_all.assert_not_called()
+
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value=None):
+            tab.on_refresh_selected()
+        services.run_guarded.assert_not_called()
+
+        tab.on_backup()
+        services.run_guarded.assert_called_once_with(db_module.backup)
+
+        services.set_status.reset_mock()
+        services.refresh_all.reset_mock()
+        tab.on_refresh()
+        services.refresh_all.assert_called_once_with()
+        services.set_status.assert_called_once_with("Refreshed", True)
+
+        services.set_status.reset_mock()
+        with patch.object(tab, "refresh") as refresh:
+            tab.on_run()
+        services.set_status.assert_called_once_with("Started vscode", True)
+        refresh.assert_called_once_with()
+
+        services.set_status.reset_mock()
+        db_module.launch_ide = lambda ide=None: (_ for _ in ()).throw(RuntimeError("launch failed"))
+        with patch.object(tab, "refresh") as refresh, patch("vscode_inject.gui_tabs.messagebox.showerror") as showerror:
+            tab.on_run()
+        showerror.assert_called_once_with("Run IDE", "launch failed")
+        services.set_status.assert_called_once_with("launch failed", False)
+        refresh.assert_not_called()
+
 
 class CodexTabTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1958,6 +2549,166 @@ class CodexTabTests(unittest.TestCase):
 
         self.assertEqual(tab.tree.item("expired_codex", "tags"), (EXPIRED_ROW_TAG,))
         self.assertEqual(tab.tree.item("expired_codex", "values")[3], "expired")
+
+    def test_update_current_label_refresh_and_handlers_cover_remaining_codex_branches(self):
+        db_module = SimpleNamespace(
+            CODEX_AUTH_PATH="C:/Users/Test/.codex/auth.json",
+            CODEX_KEY="codex://openai",
+            read_current_codex_account=lambda: {
+                "codex://openai": {"accountId": "acct-codex-1234567890", "fingerprint": "refresh-codex"}
+            },
+            list_saved_accounts=lambda kind: [
+                {
+                    "name": "alice",
+                    "data": {
+                        "saved_at": "2026-05-17T11:18:00",
+                        "entries": [
+                            {
+                                "key": "codex://openai",
+                                "value": {
+                                    "accountId": "acct-codex-1234567890",
+                                    "expires": 86_400_000,
+                                    "refresh_token": "refresh-codex",
+                                },
+                            }
+                        ],
+                    },
+                },
+                {
+                    "name": "skip",
+                    "data": {"entries": [{"key": "other", "value": {"accountId": "acct-skip"}}]},
+                },
+            ],
+            account_fingerprint=lambda value: value.get("refresh_token"),
+            save_codex_account=Mock(name="save_codex_account"),
+            import_codex_account=Mock(name="import_codex_account"),
+            use_codex_account=Mock(name="use_codex_account"),
+            refresh_saved_account=Mock(name="refresh_saved_account"),
+        )
+        services = self.make_services(db_module)
+        services.set_status = Mock()
+        services.refresh_all = Mock()
+        notebook = ttk.Notebook(self.root)
+        tab = CodexTab(notebook, services)
+
+        tab.refresh()
+
+        self.assertTrue(tab.current_value.cget("text").endswith("..."))
+        self.assertEqual(tab.tree.item("alice", "values")[4], "active")
+        self.assertFalse(tab.tree.exists("skip"))
+
+        tab.update_current_label({})
+        self.assertEqual(tab.current_value.cget("text"), "-")
+
+        error_db_module = SimpleNamespace(
+            CODEX_AUTH_PATH="C:/Users/Test/.codex/auth.json",
+            CODEX_KEY="codex://openai",
+            read_current_codex_account=lambda: (_ for _ in ()).throw(RuntimeError("codex unavailable")),
+            list_saved_accounts=db_module.list_saved_accounts,
+            account_fingerprint=db_module.account_fingerprint,
+            save_codex_account=db_module.save_codex_account,
+            import_codex_account=db_module.import_codex_account,
+            use_codex_account=db_module.use_codex_account,
+            refresh_saved_account=db_module.refresh_saved_account,
+        )
+        error_tab = CodexTab(ttk.Notebook(self.root), self.make_services(error_db_module))
+        error_tab.refresh()
+        self.assertEqual(error_tab.current_value.cget("text"), "-")
+
+        with patch("vscode_inject.gui_tabs.ask_account_name", return_value=None):
+            tab.on_save()
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.ask_account_name", return_value="alice"):
+            tab.on_save()
+        services.run_guarded.assert_called_once_with(
+            db_module.save_codex_account,
+            "alice",
+            success_msg="Saved Codex account 'alice'",
+        )
+
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.filedialog.askopenfilename", return_value=""):
+            tab.on_import()
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.filedialog.askopenfilename", return_value="C:/tmp/auth.json"), patch(
+            "vscode_inject.gui_tabs.ask_account_name", return_value=None
+        ):
+            tab.on_import()
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.filedialog.askopenfilename", return_value="C:/tmp/auth.json"), patch(
+            "vscode_inject.gui_tabs.ask_account_name", return_value="alice"
+        ):
+            tab.on_import()
+        services.run_guarded.assert_called_once_with(
+            db_module.import_codex_account,
+            "C:/tmp/auth.json",
+            "alice",
+            success_msg="Imported Codex account 'alice'",
+        )
+
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value=None):
+            tab.on_use()
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=False
+        ):
+            tab.on_use()
+        services.run_guarded.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
+        ):
+            tab.on_use()
+        services.run_guarded.assert_called_once_with(
+            db_module.use_codex_account,
+            "alice",
+            success_msg="Switched Codex to 'alice'",
+        )
+
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value=None):
+            tab.on_delete()
+        services.set_status.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=False
+        ) as askyesno, patch("vscode_inject.gui_tabs.delete_saved_account") as delete_saved_account:
+            tab.on_delete()
+        askyesno.assert_called_once_with("Delete", "Delete saved account 'alice'?")
+        delete_saved_account.assert_not_called()
+
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
+        ), patch("vscode_inject.gui_tabs.delete_saved_account") as delete_saved_account:
+            tab.on_delete()
+        delete_saved_account.assert_called_once_with(db_module, "alice")
+        services.set_status.assert_called_once_with("Deleted 'alice'", True)
+        services.refresh_all.assert_called_once_with()
+
+        services.set_status.reset_mock()
+        services.refresh_all.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
+        ), patch("vscode_inject.gui_tabs.delete_saved_account", side_effect=OSError("delete failed")):
+            tab.on_delete()
+        services.set_status.assert_called_once_with("delete failed", False)
+        services.refresh_all.assert_not_called()
+
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value=None):
+            tab.on_refresh_selected()
+        services.run_guarded.assert_not_called()
+
+        services.set_status.reset_mock()
+        services.refresh_all.reset_mock()
+        tab.on_refresh()
+        services.refresh_all.assert_called_once_with()
+        services.set_status.assert_called_once_with("Refreshed", True)
 
 
 class GuiAppPollingTests(unittest.TestCase):

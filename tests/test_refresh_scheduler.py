@@ -531,6 +531,99 @@ class RefreshSchedulerTests(unittest.TestCase):
             ],
         )
 
+    def test_run_once_retries_when_provider_has_no_registered_refresher_and_prunes_stale_state(self):
+        now_ms = 1_000
+        raw_records = [
+            {
+                "name": "alice",
+                "path": "alice.json",
+                "kind": "ide",
+                "readable": True,
+                "data": {
+                    "entries": [
+                        {
+                            "key": oauth_refresh.KILO_NEW_KEY,
+                            "value": {
+                                "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                "access_token": "old-access",
+                                "refresh_token": "refresh-1",
+                                "expires": now_ms + 1_000,
+                                "accountId": "acct-1",
+                            },
+                        }
+                    ]
+                },
+            }
+        ]
+
+        scheduler = refresh_scheduler.AutoRefreshScheduler(
+            list_saved_accounts=lambda: raw_records,
+            write_saved_account_batch=lambda updates: None,
+            persist_refreshed_group=lambda updates, _group: None,
+            refreshers={"other-provider": lambda bundle: bundle},
+            now_ms=lambda: now_ms,
+            policy=refresh_scheduler.RefreshPolicy(initial_retry_ms=30_000, max_retry_ms=120_000),
+        )
+        stale_key = oauth_refresh.RefreshGroupKey(provider=oauth_refresh.OPENAI_CODEX_PROVIDER, refresh_token="stale-refresh")
+        scheduler._group_states[stale_key] = refresh_scheduler.GroupRuntimeState(failure_count=2, next_retry_at=99_999)
+
+        result = scheduler.run_once()
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failed_groups, 1)
+        self.assertEqual(result.terminal_failed_groups, 0)
+        self.assertIn("No refresher is registered", result.message or "")
+        self.assertIn("retry in 30s", result.message or "")
+        self.assertNotIn(stale_key, scheduler._group_states)
+
+    def test_build_message_handles_multiple_failures_and_empty_retry_hint(self):
+        scheduler = refresh_scheduler.AutoRefreshScheduler(
+            list_saved_accounts=lambda: [],
+            write_saved_account_batch=lambda updates: None,
+            persist_refreshed_group=lambda updates, _group: None,
+            now_ms=lambda: 1_000,
+        )
+
+        def make_group(name: str, refresh_token: str) -> oauth_refresh.RefreshGroup:
+            bundle = oauth_refresh.TokenBundle(
+                access_token=f"access-{name}",
+                refresh_token=refresh_token,
+                expires=2_000,
+                account_id=f"acct-{name}",
+                id_token=None,
+            )
+            key = oauth_refresh.RefreshGroupKey(provider=oauth_refresh.OPENAI_CODEX_PROVIDER, refresh_token=refresh_token)
+            entry = oauth_refresh.RefreshableRecordEntry(
+                record_name=name,
+                record_path=f"{name}.json",
+                entry_index=0,
+                group_key=key,
+                bundle=bundle,
+            )
+            return oauth_refresh.RefreshGroup(key=key, bundle=bundle, expires=2_000, entries=(entry,))
+
+        failures = [
+            refresh_scheduler.RefreshFailure(
+                group=make_group("alice", "refresh-1"),
+                error_message="temporary failure",
+                terminal=False,
+                next_retry_at=31_000,
+            ),
+            refresh_scheduler.RefreshFailure(
+                group=make_group("bob", "refresh-2"),
+                error_message="revoked",
+                terminal=True,
+                next_retry_at=None,
+            ),
+        ]
+
+        self.assertEqual(
+            scheduler._build_message(0, 0, failures),
+            "2 token groups failed, 1 terminal, first was alice: temporary failure (retry in 30s)",
+        )
+        self.assertIsNone(scheduler._build_message(0, 0, []))
+        self.assertEqual(scheduler._retry_message(None), "")
+
 
 if __name__ == "__main__":
     unittest.main()
