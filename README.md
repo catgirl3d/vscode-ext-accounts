@@ -74,10 +74,10 @@ Saved profiles in `accounts/*.json` can be refreshed independently from the live
 - **Renew tokens** refreshes only the saved snapshot in `accounts/*.json`.
 - It does **not** rewrite `state.vscdb`, `~/.local/share/kilo/auth.json`, or `~/.codex/auth.json` until you explicitly apply the profile with **Use selected** / **Use selected Codex**.
 - **Auto-refresh** runs only while the app window is open.
-- Auto-refresh tracks only tokens that are still valid and will expire soon (default threshold: `10 minutes`).
+- Auto-refresh tracks only tokens that are still valid and will expire soon (default threshold: `2 days`).
 - Saved profiles that already contain expired tokens are shown as `expired` in red and are skipped by auto-refresh.
 - You can still try **Renew tokens** manually for a saved profile with expired tokens, but older refresh tokens may fail with `401` / `invalid_grant`.
-- If upstream returns a terminal auth error (`invalid_grant`, `already been used`, `revoked`, `sign in again`, etc.), auto-refresh is disabled for that refresh-token group until app restart.
+- If upstream returns a terminal auth error (`invalid_grant`, `already been used`, `revoked`, `sign in again`, etc.), auto-refresh is disabled for that refresh-token group across app restarts until you refresh it manually or replace the saved tokens.
 - Console logs use `[manual-refresh]` and `[auto-refresh]` prefixes.
 
 ## Run locally

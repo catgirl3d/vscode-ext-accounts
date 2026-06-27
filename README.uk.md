@@ -74,10 +74,10 @@ Codex не вважається IDE-extension-слотом. Для нього є
 - **Renew tokens** оновлює тільки збережений snapshot у `accounts/*.json`.
 - Кнопка **не** переписує `state.vscdb`, `~/.local/share/kilo/auth.json` або `~/.codex/auth.json`, доки ви явно не застосуєте профіль через **Use selected** / **Use selected Codex**.
 - **Auto-refresh** працює лише поки відкрите вікно застосунку.
-- Auto-refresh відстежує тільки токени, які ще валідні, але скоро втратять чинність (дефолтний поріг: `10 хвилин`).
+- Auto-refresh відстежує тільки токени, які ще валідні, але скоро втратять чинність (дефолтний поріг: `2 дні`).
 - Профілі, які вже прострочені, показуються як `expired` червоним кольором і пропускаються auto-refresh'ем.
 - Для простроченого snapshot усе ще можна вручну натиснути **Renew tokens**, але старі refresh token часто падають з `401` / `invalid_grant`.
-- Якщо upstream повертає terminal auth error (`invalid_grant`, `already been used`, `revoked`, `sign in again` тощо), auto-refresh вимикається для цієї refresh-token-group до перезапуску застосунку.
+- Якщо upstream повертає terminal auth error (`invalid_grant`, `already been used`, `revoked`, `sign in again` тощо), auto-refresh вимикається для цієї refresh-token-group навіть після перезапуску застосунку, доки ви не оновите її вручну або не заміните збережені токени.
 - Консольні логи мають префікси `[manual-refresh]` і `[auto-refresh]`.
 
 ## Локальний запуск
