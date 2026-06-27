@@ -234,7 +234,7 @@ def refresh_saved_account(
             updated_data["refresh_error"] = str(exc)
             updated_data["refresh_error_at"] = oauth_refresh_module.current_time_iso()
             write_saved_account_batch({path: updated_data})
-            raise saved_account_refresh_error_cls(f"Refresh failed for '{name}': {exc}") from exc
+            raise saved_account_refresh_error_cls(f"Token renewal failed for '{name}': {exc}") from exc
 
         updated_data["entries"] = refreshed.entries
         updated_data["last_refreshed_at"] = refreshed.refreshed_at
@@ -255,7 +255,7 @@ def refresh_saved_account(
         group_label = "group" if refreshed.refreshed_groups == 1 else "groups"
         entry_label = "entry" if refreshed.refreshed_entries == 1 else "entries"
         return (
-            f"Refreshed '{name}' "
+            f"Renewed tokens for '{name}' "
             f"({refreshed.refreshed_groups} token {group_label}, {refreshed.refreshed_entries} {entry_label})"
         )
 

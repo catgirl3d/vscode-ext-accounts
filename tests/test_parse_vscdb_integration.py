@@ -980,7 +980,7 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
             msg = db.refresh_saved_account("alice")
 
         mock_refresh.assert_called_once_with(account_data["entries"])
-        self.assertIn("Refreshed 'alice'", msg)
+        self.assertIn("Renewed tokens for 'alice'", msg)
 
         saved_data = json.loads((accounts_dir / "alice.json").read_text(encoding="utf-8"))
         self.assertEqual(saved_data["entries"], refreshed_entries)
@@ -1079,7 +1079,7 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
                 db.refresh_saved_account("alice")
 
         message = str(exc_info.exception)
-        self.assertIn("Refreshed saved account 'alice', but failed to persist the new credentials locally: disk full.", message)
+        self.assertIn("Renewed tokens for saved account 'alice', but failed to persist the new credentials locally: disk full.", message)
         self.assertIn("manual sign-in may be required", message)
 
     def test_read_current_accounts_for_vscode_does_not_merge_kilo_new_auth(self):

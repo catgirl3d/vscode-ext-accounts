@@ -153,7 +153,7 @@ class AccountServicesModuleTests(TempDirTestCase):
             current_time_iso=lambda: "2026-05-15T12:00:00Z",
         )
 
-        with self.assertRaisesRegex(UserFacingError, "Refresh failed for 'alice': refresh failed"):
+        with self.assertRaisesRegex(UserFacingError, "Token renewal failed for 'alice': refresh failed"):
             account_services.refresh_saved_account(
                 "alice",
                 operation_lock=contextlib.nullcontext(),

@@ -48,8 +48,8 @@ class SavedAccountRefreshError(UserFacingError):
     """Raised when a manual saved-account refresh fails in an expected way."""
 
 
-class RefreshedCredentialsPersistenceError(UserFacingError):
-    """Raised when refreshed credentials were obtained but could not be saved locally."""
+class RenewedCredentialsPersistenceError(UserFacingError):
+    """Raised when renewed credentials were obtained but could not be saved locally."""
 
     def __init__(
         self,
@@ -430,7 +430,7 @@ def persist_refreshed_saved_account_batch(
     try:
         write_saved_account_batch(write_updates)
     except Exception as exc:
-        raise RefreshedCredentialsPersistenceError(
+        raise RenewedCredentialsPersistenceError(
             _refreshed_credentials_persistence_message(
                 subject_label=subject_label,
                 save_error=exc,
@@ -645,7 +645,7 @@ def refresh_saved_account(name: str) -> str:
         write_saved_account_batch=write_saved_account_batch,
         persist_refreshed_saved_account_batch=persist_refreshed_saved_account_batch,
         saved_account_refresh_error_cls=SavedAccountRefreshError,
-        persistence_error_cls=RefreshedCredentialsPersistenceError,
+        persistence_error_cls=RenewedCredentialsPersistenceError,
     )
 
 

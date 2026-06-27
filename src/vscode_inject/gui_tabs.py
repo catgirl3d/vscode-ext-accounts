@@ -364,6 +364,13 @@ def tab_button(parent, services: GuiServices, text: str, cmd, accent=False):
     return button
 
 
+def tab_button_separator(parent, services: GuiServices):
+    separator = tk.Frame(parent, bg=services.bg, padx=4)
+    separator.pack(side="left", fill="y", padx=2)
+    tk.Frame(separator, bg=services.btn_bg, width=1).pack(fill="y", pady=4)
+    return separator
+
+
 class IdeAccountsTab:
     def __init__(self, notebook: ttk.Notebook, services: GuiServices):
         self.services = services
@@ -527,13 +534,15 @@ class IdeAccountsTab:
 
         self.btn_frame = tk.Frame(self.frame, bg=bg)
         self.btn_frame.pack(padx=10, pady=(0, 6))
-        tab_button(self.btn_frame, self.services, "💾 Save current", self.on_save, accent=True)
+        tab_button(self.btn_frame, self.services, "▶ Use selected", self.on_use, accent=True)
+        tab_button(self.btn_frame, self.services, "💾 Save current", self.on_save)
         tab_button(self.btn_frame, self.services, "📥 Import account", self.on_import_clipboard)
-        tab_button(self.btn_frame, self.services, "▶ Use selected", self.on_use)
-        tab_button(self.btn_frame, self.services, "↻ Refresh selected", self.on_refresh_selected)
+        tab_button_separator(self.btn_frame, self.services)
+        tab_button(self.btn_frame, self.services, "↻ Renew tokens", self.on_refresh_selected)
         tab_button(self.btn_frame, self.services, "✏ Rename", self.on_rename)
         tab_button(self.btn_frame, self.services, "🗑 Delete", self.on_delete)
-        tab_button(self.btn_frame, self.services, "⟳ Refresh", self.on_refresh)
+        tab_button_separator(self.btn_frame, self.services)
+        tab_button(self.btn_frame, self.services, "⟳ Reload", self.on_refresh)
         self.run_button = tab_button(self.btn_frame, self.services, "RUN", self.on_run)
         self.backup_button = tab_button(self.btn_frame, self.services, "📦 Full backup", self.on_backup)
         self.run_button.pack_forget()
@@ -821,7 +830,7 @@ class IdeAccountsTab:
 
     def on_refresh(self):
         self.services.refresh_all()
-        self.services.set_status("Refreshed", True)
+        self.services.set_status("Reloaded view", True)
 
 
 class CodexTab:
@@ -912,13 +921,15 @@ class CodexTab:
 
         self.btn_frame = tk.Frame(self.frame, bg=bg)
         self.btn_frame.pack(padx=10, pady=(0, 6))
-        tab_button(self.btn_frame, self.services, "💾 Save current Codex", self.on_save, accent=True)
+        tab_button(self.btn_frame, self.services, "▶ Use selected Codex", self.on_use, accent=True)
+        tab_button(self.btn_frame, self.services, "💾 Save current Codex", self.on_save)
         tab_button(self.btn_frame, self.services, "📥 Import Codex auth", self.on_import)
-        tab_button(self.btn_frame, self.services, "▶ Use selected Codex", self.on_use)
-        tab_button(self.btn_frame, self.services, "↻ Refresh selected", self.on_refresh_selected)
+        tab_button_separator(self.btn_frame, self.services)
+        tab_button(self.btn_frame, self.services, "↻ Renew tokens", self.on_refresh_selected)
         tab_button(self.btn_frame, self.services, "✏ Rename", self.on_rename)
         tab_button(self.btn_frame, self.services, "🗑 Delete", self.on_delete)
-        tab_button(self.btn_frame, self.services, "⟳ Refresh", self.on_refresh)
+        tab_button_separator(self.btn_frame, self.services)
+        tab_button(self.btn_frame, self.services, "⟳ Reload", self.on_refresh)
 
     def update_current_label(self, current_account):
         if current_account:
@@ -1032,4 +1043,4 @@ class CodexTab:
 
     def on_refresh(self):
         self.services.refresh_all()
-        self.services.set_status("Refreshed", True)
+        self.services.set_status("Reloaded view", True)

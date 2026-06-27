@@ -17,6 +17,10 @@ from vscode_inject.gui_tabs import CodexTab, EXPIRED_ROW_TAG, GuiServices, IdeAc
 from vscode_inject import parse_vscdb as db
 
 
+def button_texts(widget: tk.Misc) -> list[str]:
+    return [child.cget("text") for child in widget.winfo_children() if isinstance(child, tk.Button)]
+
+
 class GuiTabsHelperTests(unittest.TestCase):
     def test_formatting_and_selection_helpers_cover_edge_cases(self):
         self.assertIsInstance(gui_tabs.current_time_ms(), int)
@@ -174,7 +178,9 @@ class IdeAccountsTabTests(unittest.TestCase):
         self.assertIs(tab.run_button.master, tab.btn_frame)
         self.assertEqual(tab.context_menu.entrycget(0, "label"), "Use selected")
         self.assertEqual(tab.context_menu.entrycget(1, "label"), "Rename")
-        self.assertIn("✏ Rename", [child.cget("text") for child in tab.btn_frame.winfo_children()])
+        self.assertEqual(button_texts(tab.btn_frame)[:3], ["▶ Use selected", "💾 Save current", "📥 Import account"])
+        self.assertIn("↻ Renew tokens", button_texts(tab.btn_frame))
+        self.assertIn("⟳ Reload", button_texts(tab.btn_frame))
 
     def test_run_button_is_hidden_while_selected_ide_is_running(self):
         notebook = ttk.Notebook(self.root)
@@ -688,7 +694,7 @@ class IdeAccountsTabTests(unittest.TestCase):
         services.refresh_all.reset_mock()
         tab.on_refresh()
         services.refresh_all.assert_called_once_with()
-        services.set_status.assert_called_once_with("Refreshed", True)
+        services.set_status.assert_called_once_with("Reloaded view", True)
 
         services.set_status.reset_mock()
         with patch.object(tab, "refresh") as refresh:
@@ -743,7 +749,9 @@ class CodexTabTests(unittest.TestCase):
 
         self.assertEqual(tab.context_menu.entrycget(0, "label"), "Use selected")
         self.assertEqual(tab.context_menu.entrycget(1, "label"), "Rename")
-        self.assertIn("✏ Rename", [child.cget("text") for child in tab.btn_frame.winfo_children()])
+        self.assertEqual(button_texts(tab.btn_frame)[:3], ["▶ Use selected Codex", "💾 Save current Codex", "📥 Import Codex auth"])
+        self.assertIn("↻ Renew tokens", button_texts(tab.btn_frame))
+        self.assertIn("⟳ Reload", button_texts(tab.btn_frame))
 
         with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
             tab.on_refresh_selected()
@@ -1021,7 +1029,7 @@ class CodexTabTests(unittest.TestCase):
         services.refresh_all.reset_mock()
         tab.on_refresh()
         services.refresh_all.assert_called_once_with()
-        services.set_status.assert_called_once_with("Refreshed", True)
+        services.set_status.assert_called_once_with("Reloaded view", True)
 
 
 if __name__ == "__main__":

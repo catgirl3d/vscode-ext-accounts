@@ -276,7 +276,7 @@ def refreshed_credentials_persistence_message(
     recovery_path: str | None,
     recovery_error: Exception | None,
 ) -> str:
-    base = f"Refreshed {subject_label}, but failed to persist the new credentials locally: {save_error}."
+    base = f"Renewed tokens for {subject_label}, but failed to persist the new credentials locally: {save_error}."
     if recovery_path:
         return (
             f"{base} A recovery snapshot was saved to {recovery_path}. "

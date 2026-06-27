@@ -48,24 +48,24 @@ class GuiAppPollingTests(unittest.TestCase):
         output = io.StringIO()
 
         with redirect_stdout(output):
-            message, ok = execute_guarded_call(lambda: "Refreshed 'alice' (1 token group, 1 entry)", log_prefix="manual-refresh")
+            message, ok = execute_guarded_call(lambda: "Renewed tokens for 'alice' (1 token group, 1 entry)", log_prefix="manual-refresh")
 
         self.assertTrue(ok)
-        self.assertEqual(message, "Refreshed 'alice' (1 token group, 1 entry)")
-        self.assertIn("[manual-refresh] INFO: Refreshed 'alice' (1 token group, 1 entry)", output.getvalue())
+        self.assertEqual(message, "Renewed tokens for 'alice' (1 token group, 1 entry)")
+        self.assertIn("[manual-refresh] INFO: Renewed tokens for 'alice' (1 token group, 1 entry)", output.getvalue())
 
     def test_execute_guarded_call_logs_manual_refresh_error_with_prefix_without_traceback(self):
         output = io.StringIO()
 
         with redirect_stdout(output), patch("vscode_inject.gui_app.traceback.print_exc") as print_exc:
             message, ok = execute_guarded_call(
-                lambda: (_ for _ in ()).throw(db.SavedAccountRefreshError("Refresh failed for 'alice': invalid_grant")),
+                lambda: (_ for _ in ()).throw(db.SavedAccountRefreshError("Token renewal failed for 'alice': invalid_grant")),
                 log_prefix="manual-refresh",
             )
 
         self.assertFalse(ok)
-        self.assertEqual(message, "Refresh failed for 'alice': invalid_grant")
-        self.assertIn("[manual-refresh] ERROR: Refresh failed for 'alice': invalid_grant", output.getvalue())
+        self.assertEqual(message, "Token renewal failed for 'alice': invalid_grant")
+        self.assertIn("[manual-refresh] ERROR: Token renewal failed for 'alice': invalid_grant", output.getvalue())
         print_exc.assert_not_called()
 
     def test_execute_auto_refresh_tick_returns_failed_result_on_unexpected_exception(self):
