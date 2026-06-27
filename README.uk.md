@@ -4,8 +4,12 @@
 
 ![VSCode Account Manager](1.png)
 
-GUI-утиліта для керування збереженими акаунтами розширень VSCode/Antigravity та окремим Codex.
+GUI-утиліта для керування збереженими акаунтами OpenAI (ChatGPT/Codex) розширень VSCode/Antigravity та окремим Codex.
 Вона читає та записує дані акаунтів, що зберігаються у `state.vscdb` (AES-256-GCM через Windows DPAPI), `~/.local/share/kilo/auth.json` та `~/.codex/auth.json`.
+
+> [!IMPORTANT]
+> **Підтримується лише OpenAI (auth.openai.com).** Утиліта розроблена спеціально для резервного копіювання, відновлення та оновлення сесій авторизації OpenAI OAuth. Інші провайдери авторизації не підтримуються.
+
 
 ## Сценарії використання
 
@@ -49,7 +53,7 @@ Kilo New зберігає токени в `~/.local/share/kilo/auth.json` — о
 4. Ввести назву акаунта.
 5. Вставити в діалог JSON-об'єкт або JSON-масив з одним елементом.
 
-Обов'язкові поля: `access_token`, `refresh_token`, `id_token`.
+Обов'язкові поля: `access_token`, `refresh_token`, `id_token` (мають бути валідними токенами OpenAI OAuth).
 Необов'язкові поля: `account_id`, `expires`.
 
 **Окреме керування Codex**
@@ -64,7 +68,7 @@ Codex не вважається IDE-extension-слотом. Для нього є
 
 ## Оновлення токенів
 
-Збережені профілі в `accounts/*.json` тепер можна оновлювати окремо від live-сховищ IDE/Codex.
+Збережені профілі в `accounts/*.json` тепер можна оновлювати окремо від live-сховищ IDE/Codex через ендпоінт авторизації OpenAI (`https://auth.openai.com/oauth/token`).
 
 - **Renew tokens** оновлює тільки збережений snapshot у `accounts/*.json`.
 - Кнопка **не** переписує `state.vscdb`, `~/.local/share/kilo/auth.json` або `~/.codex/auth.json`, доки ви явно не застосуєте профіль через **Use selected** / **Use selected Codex**.

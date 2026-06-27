@@ -4,8 +4,12 @@
 
 ![VSCode Account Manager](1.png)
 
-A GUI utility for managing saved accounts for VSCode/Antigravity extensions and standalone Codex.
+A GUI utility for managing saved OpenAI (ChatGPT/Codex) accounts for VSCode/Antigravity extensions and standalone Codex.
 It reads and writes account data stored in `state.vscdb` (AES-256-GCM via Windows DPAPI), `~/.local/share/kilo/auth.json`, and `~/.codex/auth.json`.
+
+> [!IMPORTANT]
+> **Only OpenAI (auth.openai.com) is supported.** The utility is specifically built to backup, restore, and renew OpenAI OAuth credentials. Other authorization providers are not supported.
+
 
 ## Use Cases
 
@@ -49,7 +53,7 @@ You already have a token bundle and want to save it directly for IDE targets:
 4. Enter the account name.
 5. Paste a JSON object or a one-item JSON array into the dialog.
 
-Required fields: `access_token`, `refresh_token`, `id_token`.
+Required fields: `access_token`, `refresh_token`, `id_token` (must be valid OpenAI OAuth tokens).
 Optional fields: `account_id`, `expires`.
 
 **Manage Codex separately**
@@ -64,7 +68,7 @@ Codex is not treated like an IDE extension slot. It has its own tab and its own 
 
 ## Token Refresh
 
-Saved profiles in `accounts/*.json` can be refreshed independently from the live IDE/Codex storage.
+Saved profiles in `accounts/*.json` can be refreshed independently from the live IDE/Codex storage via the OpenAI token endpoint (`https://auth.openai.com/oauth/token`).
 
 - **Renew tokens** refreshes only the saved snapshot in `accounts/*.json`.
 - It does **not** rewrite `state.vscdb`, `~/.local/share/kilo/auth.json`, or `~/.codex/auth.json` until you explicitly apply the profile with **Use selected** / **Use selected Codex**.
