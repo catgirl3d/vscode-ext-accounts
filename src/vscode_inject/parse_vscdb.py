@@ -10,7 +10,7 @@ import json
 import os
 import tempfile
 import threading
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence, TypeVar
 
 from . import account_services
 from . import backups
@@ -42,6 +42,9 @@ class AccountNotFoundError(SavedAccountError):
 
 class AccountKindMismatchError(SavedAccountError):
     """Raised when a saved account exists, but not for the requested target kind."""
+
+
+SavedAccountStoreResult = TypeVar("SavedAccountStoreResult")
 
 
 class SavedAccountRefreshError(UserFacingError):
@@ -539,21 +542,19 @@ def read_current_accounts_for_ide(ide: str) -> dict[str, dict]:
     )
 
 
-def _load_saved_account_data(name: str, expected_kind: str | None = None) -> tuple[str, dict, str]:
+def _run_saved_account_store_call(
+    name: str,
+    store_call: Callable[[], SavedAccountStoreResult],
+    *,
+    expected_kind: str | None = None,
+    use_lock: bool = False,
+    map_value_error: bool = False,
+) -> SavedAccountStoreResult:
     try:
-        return saved_store.load_saved_account(_accounts_dir(), name, CODEX_KEY, expected_kind)
-    except FileNotFoundError as exc:
-        raise AccountNotFoundError(f"Account '{name}' not found.") from exc
-    except saved_store.SavedAccountKindMismatchError as exc:
-        raise AccountKindMismatchError(
-            f"Account '{name}' has kind '{exc.actual_kind}', expected '{expected_kind}'."
-        ) from exc
-
-
-def rename_saved_account(name: str, new_name: str, expected_kind: str | None = None) -> str:
-    try:
-        with SAVED_ACCOUNT_REFRESH_LOCK:
-            _path, data, _kind = saved_store.rename_saved_account(_accounts_dir(), CODEX_KEY, name, new_name, expected_kind)
+        if use_lock:
+            with SAVED_ACCOUNT_REFRESH_LOCK:
+                return store_call()
+        return store_call()
     except FileNotFoundError as exc:
         raise AccountNotFoundError(f"Account '{name}' not found.") from exc
     except saved_store.SavedAccountKindMismatchError as exc:
@@ -561,22 +562,38 @@ def rename_saved_account(name: str, new_name: str, expected_kind: str | None = N
             f"Account '{name}' has kind '{exc.actual_kind}', expected '{expected_kind}'."
         ) from exc
     except ValueError as exc:
-        raise UserFacingError(str(exc)) from exc
+        if map_value_error:
+            raise UserFacingError(str(exc)) from exc
+        raise
+
+
+def _load_saved_account_data(name: str, expected_kind: str | None = None) -> tuple[str, dict, str]:
+    return _run_saved_account_store_call(
+        name,
+        lambda: saved_store.load_saved_account(_accounts_dir(), name, CODEX_KEY, expected_kind),
+        expected_kind=expected_kind,
+    )
+
+
+def rename_saved_account(name: str, new_name: str, expected_kind: str | None = None) -> str:
+    _path, data, _kind = _run_saved_account_store_call(
+        name,
+        lambda: saved_store.rename_saved_account(_accounts_dir(), CODEX_KEY, name, new_name, expected_kind),
+        expected_kind=expected_kind,
+        use_lock=True,
+        map_value_error=True,
+    )
     return data["name"]
 
 
 def delete_saved_account(name: str, expected_kind: str | None = None) -> None:
-    try:
-        with SAVED_ACCOUNT_REFRESH_LOCK:
-            saved_store.delete_saved_account(_accounts_dir(), name, CODEX_KEY, expected_kind)
-    except FileNotFoundError as exc:
-        raise AccountNotFoundError(f"Account '{name}' not found.") from exc
-    except saved_store.SavedAccountKindMismatchError as exc:
-        raise AccountKindMismatchError(
-            f"Account '{name}' has kind '{exc.actual_kind}', expected '{expected_kind}'."
-        ) from exc
-    except ValueError as exc:
-        raise UserFacingError(str(exc)) from exc
+    _run_saved_account_store_call(
+        name,
+        lambda: saved_store.delete_saved_account(_accounts_dir(), name, CODEX_KEY, expected_kind),
+        expected_kind=expected_kind,
+        use_lock=True,
+        map_value_error=True,
+    )
 
 
 def _saved_codex_entry(data: dict) -> dict | None:

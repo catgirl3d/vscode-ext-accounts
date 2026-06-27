@@ -24,6 +24,60 @@ class ImportedCodexAccountResult:
     expires_ms: int
 
 
+def _write_saved_account_file(
+    name: str,
+    kind: str,
+    ext_label: str,
+    entries: list[dict],
+    *,
+    write_account_file,
+    user_facing_error_cls,
+) -> str:
+    try:
+        return write_account_file(name, kind, ext_label, entries)
+    except ValueError as exc:
+        raise user_facing_error_cls(str(exc)) from exc
+
+
+def _build_saved_account_write_result(
+    name: str,
+    kind: str,
+    ext_label: str,
+    entries: list[dict],
+    *,
+    write_account_file,
+    user_facing_error_cls,
+) -> SavedAccountWriteResult:
+    path = _write_saved_account_file(
+        name,
+        kind,
+        ext_label,
+        entries,
+        write_account_file=write_account_file,
+        user_facing_error_cls=user_facing_error_cls,
+    )
+    return SavedAccountWriteResult(path=path, ext_label=ext_label, entries=entries)
+
+
+def _validate_saved_account_value(
+    value: Mapping[str, Any],
+    *,
+    user_facing_error_cls,
+    missing_tokens_message: str,
+    missing_id_token_message: str,
+    missing_expires_message: str | None = None,
+):
+    if not value.get("access_token") or not value.get("refresh_token"):
+        raise user_facing_error_cls(missing_tokens_message)
+
+    expires_ms = value.get("expires", 0)
+    if missing_expires_message and not expires_ms:
+        raise user_facing_error_cls(missing_expires_message)
+    if not value.get("id_token"):
+        raise user_facing_error_cls(missing_id_token_message)
+    return expires_ms
+
+
 def is_kilo_new(ext_sub: str | None, kilo_new_key: str) -> bool:
     return ext_sub == kilo_new_key
 
@@ -168,11 +222,14 @@ def save_ide_account(
     entries = read_current_ide_entries_for_selection(ext_names)
     if not entries:
         raise user_facing_error_cls(f"No matching account entries found for {ext_label}.")
-    try:
-        out = write_account_file(name, "ide", ext_label, entries)
-    except ValueError as exc:
-        raise user_facing_error_cls(str(exc)) from exc
-    return SavedAccountWriteResult(path=out, ext_label=ext_label, entries=entries)
+    return _build_saved_account_write_result(
+        name,
+        "ide",
+        ext_label,
+        entries,
+        write_account_file=write_account_file,
+        user_facing_error_cls=user_facing_error_cls,
+    )
 
 
 def save_codex_account(
@@ -185,17 +242,22 @@ def save_codex_account(
     user_facing_error_cls,
 ) -> SavedAccountWriteResult:
     value = from_codex_format(read_codex_auth())
-    if not value.get("access_token") or not value.get("refresh_token"):
-        raise user_facing_error_cls("ERROR: Codex auth.json is missing access_token or refresh_token.")
-    if not value.get("id_token"):
-        raise user_facing_error_cls("ERROR: Codex auth.json requires id_token.")
+    _validate_saved_account_value(
+        value,
+        user_facing_error_cls=user_facing_error_cls,
+        missing_tokens_message="ERROR: Codex auth.json is missing access_token or refresh_token.",
+        missing_id_token_message="ERROR: Codex auth.json requires id_token.",
+    )
 
-    entry = {"key": codex_key, "value": value}
-    try:
-        out = write_account_file(name, "codex", "codex", [entry])
-    except ValueError as exc:
-        raise user_facing_error_cls(str(exc)) from exc
-    return SavedAccountWriteResult(path=out, ext_label="codex", entries=[entry])
+    entries = [{"key": codex_key, "value": value}]
+    return _build_saved_account_write_result(
+        name,
+        "codex",
+        "codex",
+        entries,
+        write_account_file=write_account_file,
+        user_facing_error_cls=user_facing_error_cls,
+    )
 
 
 def refresh_saved_account(
@@ -397,23 +459,24 @@ def import_codex_account(
         raise user_facing_error_cls(f"ERROR: invalid auth.json: {exc}") from exc
 
     value = from_codex_format(data)
-    access_token = value.get("access_token")
-    refresh_token = value.get("refresh_token")
     account_id = value.get("accountId") or ""
-    expires_ms = value.get("expires", 0)
+    expires_ms = _validate_saved_account_value(
+        value,
+        user_facing_error_cls=user_facing_error_cls,
+        missing_tokens_message="ERROR: access_token or refresh_token missing in auth.json",
+        missing_id_token_message="ERROR: Codex import requires id_token in auth.json.",
+        missing_expires_message="ERROR: could not decode access token expiry from auth.json",
+    )
 
-    if not access_token or not refresh_token:
-        raise user_facing_error_cls("ERROR: access_token or refresh_token missing in auth.json")
-    if not expires_ms:
-        raise user_facing_error_cls("ERROR: could not decode access token expiry from auth.json")
-    if not value.get("id_token"):
-        raise user_facing_error_cls("ERROR: Codex import requires id_token in auth.json.")
-
-    entry = {"key": codex_key, "value": value}
-    try:
-        out = write_account_file(name, "codex", "codex", [entry])
-    except ValueError as exc:
-        raise user_facing_error_cls(str(exc)) from exc
+    entries = [{"key": codex_key, "value": value}]
+    out = _write_saved_account_file(
+        name,
+        "codex",
+        "codex",
+        entries,
+        write_account_file=write_account_file,
+        user_facing_error_cls=user_facing_error_cls,
+    )
     return ImportedCodexAccountResult(path=out, account_id=account_id, expires_ms=expires_ms)
 
 
@@ -463,16 +526,13 @@ def import_ide_account_data(
         raise user_facing_error_cls("ERROR: JSON must be an object or an array of objects")
 
     value = from_codex_format(data)
-    access_token = value.get("access_token")
-    refresh_token = value.get("refresh_token")
-    expires_ms = value.get("expires", 0)
-
-    if not access_token or not refresh_token:
-        raise user_facing_error_cls("ERROR: access_token or refresh_token missing in data")
-    if not expires_ms:
-        raise user_facing_error_cls("ERROR: could not decode access token expiry from data")
-    if not value.get("id_token"):
-        raise user_facing_error_cls("ERROR: Codex data requires id_token.")
+    _validate_saved_account_value(
+        value,
+        user_facing_error_cls=user_facing_error_cls,
+        missing_tokens_message="ERROR: access_token or refresh_token missing in data",
+        missing_id_token_message="ERROR: Codex data requires id_token.",
+        missing_expires_message="ERROR: could not decode access token expiry from data",
+    )
 
     entries = []
     for ext_name in exts:
@@ -489,9 +549,11 @@ def import_ide_account_data(
         raise user_facing_error_cls("ERROR: No extensions selected to import the account for.")
 
     ext_label = "+".join(exts)
-    try:
-        out = write_account_file(name, "ide", ext_label, entries)
-    except ValueError as exc:
-        raise user_facing_error_cls(str(exc)) from exc
-
-    return SavedAccountWriteResult(path=out, ext_label=ext_label, entries=entries)
+    return _build_saved_account_write_result(
+        name,
+        "ide",
+        ext_label,
+        entries,
+        write_account_file=write_account_file,
+        user_facing_error_cls=user_facing_error_cls,
+    )

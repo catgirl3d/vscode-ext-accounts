@@ -64,6 +64,31 @@ class GuiServices:
     refresh_all: Callable[[], None] = field(default=lambda: None)
 
 
+@dataclass(frozen=True)
+class SavedAccountTreeColumn:
+    name: str
+    heading: str
+    width: int
+    anchor: str = "center"
+
+
+@dataclass(frozen=True)
+class SavedAccountActionButton:
+    text: str
+    handler_name: str
+    accent: bool = False
+    separator_before: bool = False
+    attr_name: str | None = None
+    hide_after_create: bool = False
+
+
+@dataclass(frozen=True)
+class SavedAccountTreeRow:
+    iid: str
+    values: tuple[Any, ...]
+    tags: tuple[str, ...]
+
+
 def format_saved_at(data):
     return data.get("saved_at", "")[:16].replace("T", " ") or "?"
 
@@ -354,6 +379,17 @@ def popup_tree_context_menu(tree, menu, event):
         menu.grab_release()
 
 
+def section_card(parent, services: GuiServices, *, padx=8, pady=6):
+    return tk.Frame(
+        parent,
+        bg=SECTION_BG,
+        padx=padx,
+        pady=pady,
+        highlightbackground=services.btn_act,
+        highlightthickness=1,
+    )
+
+
 def tab_button(parent, services: GuiServices, text: str, cmd, accent=False):
     bg = "#89b4fa" if accent else services.btn_bg
     fg = services.sel_fg if accent else services.fg
@@ -413,6 +449,53 @@ class SavedAccountsTreeTab:
         self.context_menu.add_command(label="Rename", command=self.on_rename)
         self.tree.bind("<F2>", self.on_rename_key)
         self.tree.bind("<Button-3>", self.on_tree_context_menu)
+
+    def _build_saved_account_tree(self, columns: Sequence[SavedAccountTreeColumn], *, height: int = 8):
+        column_names = tuple(column.name for column in columns)
+        self.tree = ttk.Treeview(self.frame, columns=column_names, show="headings", height=height, selectmode="browse")
+        for column in columns:
+            self.tree.heading(column.name, text=column.heading, anchor="center")
+            self.tree.column(column.name, width=column.width, anchor=column.anchor)
+        self._configure_saved_account_tree()
+        self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+
+    def _build_saved_account_actions(self, buttons: Sequence[SavedAccountActionButton]):
+        self.btn_frame = tk.Frame(self.frame, bg=self.services.bg)
+        self.btn_frame.pack(padx=10, pady=(0, 6))
+        for button_spec in buttons:
+            if button_spec.separator_before:
+                tab_button_separator(self.btn_frame, self.services)
+            button = tab_button(
+                self.btn_frame,
+                self.services,
+                button_spec.text,
+                getattr(self, button_spec.handler_name),
+                accent=button_spec.accent,
+            )
+            if button_spec.attr_name:
+                setattr(self, button_spec.attr_name, button)
+            if button_spec.hide_after_create:
+                button.pack_forget()
+
+    def _present_saved_account_tree(
+        self,
+        kind: str,
+        *,
+        load_current_state: Callable[[], Any],
+        update_current_state: Callable[[Any], None],
+        build_row: Callable[[dict, Any], SavedAccountTreeRow | None],
+        after_present: Callable[[Any], None] | None = None,
+    ):
+        self.tree.delete(*self.tree.get_children())
+        current_state = load_current_state()
+        update_current_state(current_state)
+        for record in self.services.db.list_saved_accounts(kind):
+            row = build_row(record, current_state)
+            if row is None:
+                continue
+            self.tree.insert("", "end", iid=row.iid, values=row.values, tags=row.tags)
+        if after_present:
+            after_present(current_state)
 
     def selected_saved_account_name(self):
         return selected_name(self.tree, self._require_saved_account_config_value("selection_empty_message"))
@@ -521,7 +604,7 @@ class IdeAccountsTab(SavedAccountsTreeTab):
         header.grid_columnconfigure(1, weight=0)
         header.grid_columnconfigure(2, weight=1)
 
-        ide_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_act, highlightthickness=1)
+        ide_card = section_card(header, self.services)
         ide_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         tk.Label(ide_card, text="Target IDE", bg=SECTION_BG, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(anchor="w")
         ide_top = tk.Frame(ide_card, bg=SECTION_BG)
@@ -541,7 +624,7 @@ class IdeAccountsTab(SavedAccountsTreeTab):
                 font=("Segoe UI", 9, "bold"),
             ).pack(side="left", padx=(0, 10))
 
-        runtime_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_act, highlightthickness=1)
+        runtime_card = section_card(header, self.services)
         runtime_card.grid(row=0, column=1, sticky="nsew", padx=4)
         runtime_card.grid_columnconfigure(0, minsize=runtime_status_width)
         tk.Label(runtime_card, text="Runtime status", bg=SECTION_BG, fg="#6c7086", font=section_label_font).grid(row=0, column=0, sticky="w")
@@ -557,7 +640,7 @@ class IdeAccountsTab(SavedAccountsTreeTab):
         )
         self.ide_state_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
 
-        ext_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_act, highlightthickness=1)
+        ext_card = section_card(header, self.services)
         ext_card.grid(row=0, column=2, sticky="nsew", padx=(4, 0))
         tk.Label(ext_card, text="Extensions", bg=SECTION_BG, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(anchor="w")
         ide_ext_frame = tk.Frame(ext_card, bg=SECTION_BG)
@@ -575,14 +658,7 @@ class IdeAccountsTab(SavedAccountsTreeTab):
                 font=("Segoe UI", 9),
             ).pack(side="left", padx=(0, 10))
 
-        current_ide_frame = tk.Frame(
-            header,
-            bg=SECTION_BG,
-            padx=8,
-            pady=6,
-            highlightbackground=self.services.btn_act,
-            highlightthickness=1,
-        )
+        current_ide_frame = section_card(header, self.services)
         current_ide_frame.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
         current_ide_frame.grid_columnconfigure(0, minsize=current_ide_label_width)
         current_ide_frame.grid_columnconfigure(1, weight=1)
@@ -614,39 +690,31 @@ class IdeAccountsTab(SavedAccountsTreeTab):
             label.pack(side="left", padx=(0, 6))
             self.current_ide_labels[ext_id] = label
 
-        ide_cols = ("name", "ext", "accountIds", "saved", "expires", "active", "status")
-        self.tree = ttk.Treeview(self.frame, columns=ide_cols, show="headings", height=8, selectmode="browse")
-        self.tree.heading("name", text="Name", anchor="center")
-        self.tree.heading("ext", text="Ext", anchor="center")
-        self.tree.heading("accountIds", text="Account IDs", anchor="center")
-        self.tree.heading("saved", text="Saved", anchor="center")
-        self.tree.heading("expires", text="Expires", anchor="center")
-        self.tree.heading("active", text="Active", anchor="center")
-        self.tree.heading("status", text="Status", anchor="center")
-        self.tree.column("name", width=225, anchor="w")
-        self.tree.column("ext", width=75, anchor="center")
-        self.tree.column("accountIds", width=100, anchor="center")
-        self.tree.column("saved", width=112, anchor="center")
-        self.tree.column("expires", width=80, anchor="center")
-        self.tree.column("active", width=60, anchor="center")
-        self.tree.column("status", width=60, anchor="center")
-        self._configure_saved_account_tree()
-        self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        self._build_saved_account_tree(
+            (
+                SavedAccountTreeColumn("name", "Name", 225, anchor="w"),
+                SavedAccountTreeColumn("ext", "Ext", 75),
+                SavedAccountTreeColumn("accountIds", "Account IDs", 100),
+                SavedAccountTreeColumn("saved", "Saved", 112),
+                SavedAccountTreeColumn("expires", "Expires", 80),
+                SavedAccountTreeColumn("active", "Active", 60),
+                SavedAccountTreeColumn("status", "Status", 60),
+            )
+        )
 
-        self.btn_frame = tk.Frame(self.frame, bg=bg)
-        self.btn_frame.pack(padx=10, pady=(0, 6))
-        tab_button(self.btn_frame, self.services, "▶ Use selected", self.on_use, accent=True)
-        tab_button(self.btn_frame, self.services, "💾 Save current", self.on_save)
-        tab_button(self.btn_frame, self.services, "📥 Import account", self.on_import_clipboard)
-        tab_button_separator(self.btn_frame, self.services)
-        tab_button(self.btn_frame, self.services, "↻ Renew tokens", self.on_refresh_selected)
-        tab_button(self.btn_frame, self.services, "✏ Rename", self.on_rename)
-        tab_button(self.btn_frame, self.services, "🗑 Delete", self.on_delete)
-        tab_button_separator(self.btn_frame, self.services)
-        tab_button(self.btn_frame, self.services, "⟳ Reload", self.on_refresh)
-        self.run_button = tab_button(self.btn_frame, self.services, "RUN", self.on_run)
-        self.backup_button = tab_button(self.btn_frame, self.services, "📦 Full backup", self.on_backup)
-        self.run_button.pack_forget()
+        self._build_saved_account_actions(
+            (
+                SavedAccountActionButton("▶ Use selected", "on_use", accent=True),
+                SavedAccountActionButton("💾 Save current", "on_save"),
+                SavedAccountActionButton("📥 Import account", "on_import_clipboard"),
+                SavedAccountActionButton("↻ Renew tokens", "on_refresh_selected", separator_before=True),
+                SavedAccountActionButton("✏ Rename", "on_rename"),
+                SavedAccountActionButton("🗑 Delete", "on_delete"),
+                SavedAccountActionButton("⟳ Reload", "on_refresh", separator_before=True),
+                SavedAccountActionButton("RUN", "on_run", attr_name="run_button", hide_after_create=True),
+                SavedAccountActionButton("📦 Full backup", "on_backup", attr_name="backup_button"),
+            )
+        )
 
     def update_run_button_visibility(self, running: bool):
         if running:
@@ -725,69 +793,83 @@ class IdeAccountsTab(SavedAccountsTreeTab):
         self._last_runtime_state = runtime_state
         return True
 
-    def refresh(self):
+    def _load_ide_refresh_state(self):
         db = self.services.db
-        self.tree.delete(*self.tree.get_children())
-
         accounts_per_ide = {}
         for ide in db.IDE_PATHS:
             try:
                 accounts_per_ide[ide] = db.read_current_accounts_for_ide(ide)
             except Exception:
                 accounts_per_ide[ide] = {}
-
-        current_ide = self.ide_var.get()
-        self.update_current_labels(accounts_per_ide.get(current_ide, {}))
-
         try:
             kilo_new_fp = db.get_kilo_new_fingerprint()
         except Exception:
             kilo_new_fp = None
+        return {
+            "accounts_per_ide": accounts_per_ide,
+            "current_accounts": accounts_per_ide.get(self.ide_var.get(), {}),
+            "kilo_new_fingerprint": kilo_new_fp,
+        }
 
-        for record in db.list_saved_accounts("ide"):
-            name = record["name"]
-            data = record["data"]
-            entries = data.get("entries", [])
-            ide_entries = [entry for entry in entries if entry.get("key") != db.CODEX_KEY]
+    def _update_ide_refresh_state(self, refresh_state):
+        self.update_current_labels(refresh_state["current_accounts"])
 
-            saved_at = format_saved_at(data)
-            ext_tag = data.get("ext", "both")
-            expires_ms = first_expires_ms(ide_entries)
-            expires = format_saved_expires(expires_ms)
-            accounts_short = summarize_account_ids(ide_entries)
-            refresh_status = format_refresh_status(data.get("refresh_status"))
+    def _ide_active_tags(self, ide_entries, refresh_state) -> list[str]:
+        db = self.services.db
+        active_tags = []
+        ide_short = {"vscode": "VS", "antigravity": "AG"}
+        for ide, current_accounts in refresh_state["accounts_per_ide"].items():
+            ide_accounts = {
+                ext_id: info
+                for ext_id, info in current_accounts.items()
+                if ext_id != db.KILO_NEW_KEY
+            }
+            hits = db.match_saved_to_current(ide_entries, ide_accounts)
+            if hits:
+                tag = ide_short.get(ide, ide)
+                if tag not in active_tags:
+                    active_tags.append(tag)
 
-            active_tags = []
-            ide_short = {"vscode": "VS", "antigravity": "AG"}
-            for ide, current_accounts in accounts_per_ide.items():
-                ide_accounts = {
-                    ext_id: info
-                    for ext_id, info in current_accounts.items()
-                    if ext_id != db.KILO_NEW_KEY
-                }
-                hits = db.match_saved_to_current(ide_entries, ide_accounts)
-                if hits:
-                    tag = ide_short.get(ide, ide)
-                    if tag not in active_tags:
-                        active_tags.append(tag)
+        kilo_new_fp = refresh_state["kilo_new_fingerprint"]
+        if kilo_new_fp:
+            for entry in ide_entries:
+                if db.account_fingerprint(entry.get("value", {})) == kilo_new_fp:
+                    if "KN" not in active_tags:
+                        active_tags.append("KN")
+                    break
+        return active_tags
 
-            if kilo_new_fp:
-                for entry in ide_entries:
-                    if db.account_fingerprint(entry.get("value", {})) == kilo_new_fp:
-                        if "KN" not in active_tags:
-                            active_tags.append("KN")
-                        break
+    def _build_ide_saved_account_row(self, record: dict, refresh_state) -> SavedAccountTreeRow:
+        name = record["name"]
+        data = record["data"]
+        entries = data.get("entries", [])
+        ide_entries = [entry for entry in entries if entry.get("key") != self.services.db.CODEX_KEY]
 
-            active = "+".join(active_tags) if active_tags else "-"
-            self.tree.insert(
-                "",
-                "end",
-                iid=name,
-                values=(name, ext_tag, accounts_short, saved_at, expires, active, refresh_status),
-                tags=account_row_tags(data, expires_ms),
-            )
+        saved_at = format_saved_at(data)
+        ext_tag = data.get("ext", "both")
+        expires_ms = first_expires_ms(ide_entries)
+        expires = format_saved_expires(expires_ms)
+        accounts_short = summarize_account_ids(ide_entries)
+        refresh_status = format_refresh_status(data.get("refresh_status"))
+        active_tags = self._ide_active_tags(ide_entries, refresh_state)
+        active = "+".join(active_tags) if active_tags else "-"
+        return SavedAccountTreeRow(
+            iid=name,
+            values=(name, ext_tag, accounts_short, saved_at, expires, active, refresh_status),
+            tags=account_row_tags(data, expires_ms),
+        )
 
+    def _after_ide_refresh(self, _refresh_state):
         self.refresh_runtime_state(force=True)
+
+    def refresh(self):
+        self._present_saved_account_tree(
+            "ide",
+            load_current_state=self._load_ide_refresh_state,
+            update_current_state=self._update_ide_refresh_state,
+            build_row=self._build_ide_saved_account_row,
+            after_present=self._after_ide_refresh,
+        )
 
     def on_ide_change(self):
         self.services.db.set_ide(self.ide_var.get())
@@ -910,14 +992,7 @@ class CodexTab(SavedAccountsTreeTab):
         header.grid_columnconfigure(0, weight=0)
         header.grid_columnconfigure(1, weight=1)
 
-        current_card = tk.Frame(
-            header,
-            bg=SECTION_BG,
-            padx=8,
-            pady=6,
-            highlightbackground=self.services.btn_act,
-            highlightthickness=1,
-        )
+        current_card = section_card(header, self.services)
         current_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         current_card.grid_columnconfigure(0, minsize=current_value_width)
         tk.Label(current_card, text="Current Codex", bg=SECTION_BG, fg="#6c7086", font=section_label_font).grid(row=0, column=0, sticky="w")
@@ -933,14 +1008,7 @@ class CodexTab(SavedAccountsTreeTab):
         )
         self.current_value.grid(row=1, column=0, sticky="w", pady=(4, 0))
 
-        auth_card = tk.Frame(
-            header,
-            bg=SECTION_BG,
-            padx=8,
-            pady=6,
-            highlightbackground=self.services.btn_act,
-            highlightthickness=1,
-        )
+        auth_card = section_card(header, self.services)
         auth_card.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
         tk.Label(auth_card, text="Auth file", bg=SECTION_BG, fg="#6c7086", font=section_label_font).pack(anchor="w")
         tk.Label(
@@ -954,34 +1022,28 @@ class CodexTab(SavedAccountsTreeTab):
             font=("Segoe UI", 9),
         ).pack(fill="x", pady=(4, 0))
 
-        cols = ("name", "accountId", "saved", "expires", "active", "status")
-        self.tree = ttk.Treeview(self.frame, columns=cols, show="headings", height=8, selectmode="browse")
-        self.tree.heading("name", text="Name", anchor="center")
-        self.tree.heading("accountId", text="Account ID", anchor="center")
-        self.tree.heading("saved", text="Saved", anchor="center")
-        self.tree.heading("expires", text="Expires", anchor="center")
-        self.tree.heading("active", text="Active", anchor="center")
-        self.tree.heading("status", text="Status", anchor="center")
-        self.tree.column("name", width=150, anchor="w")
-        self.tree.column("accountId", width=180, anchor="center")
-        self.tree.column("saved", width=120, anchor="center")
-        self.tree.column("expires", width=100, anchor="center")
-        self.tree.column("active", width=90, anchor="center")
-        self.tree.column("status", width=90, anchor="center")
-        self._configure_saved_account_tree()
-        self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        self._build_saved_account_tree(
+            (
+                SavedAccountTreeColumn("name", "Name", 150, anchor="w"),
+                SavedAccountTreeColumn("accountId", "Account ID", 180),
+                SavedAccountTreeColumn("saved", "Saved", 120),
+                SavedAccountTreeColumn("expires", "Expires", 100),
+                SavedAccountTreeColumn("active", "Active", 90),
+                SavedAccountTreeColumn("status", "Status", 90),
+            )
+        )
 
-        self.btn_frame = tk.Frame(self.frame, bg=bg)
-        self.btn_frame.pack(padx=10, pady=(0, 6))
-        tab_button(self.btn_frame, self.services, "▶ Use selected Codex", self.on_use, accent=True)
-        tab_button(self.btn_frame, self.services, "💾 Save current Codex", self.on_save)
-        tab_button(self.btn_frame, self.services, "📥 Import Codex auth", self.on_import)
-        tab_button_separator(self.btn_frame, self.services)
-        tab_button(self.btn_frame, self.services, "↻ Renew tokens", self.on_refresh_selected)
-        tab_button(self.btn_frame, self.services, "✏ Rename", self.on_rename)
-        tab_button(self.btn_frame, self.services, "🗑 Delete", self.on_delete)
-        tab_button_separator(self.btn_frame, self.services)
-        tab_button(self.btn_frame, self.services, "⟳ Reload", self.on_refresh)
+        self._build_saved_account_actions(
+            (
+                SavedAccountActionButton("▶ Use selected Codex", "on_use", accent=True),
+                SavedAccountActionButton("💾 Save current Codex", "on_save"),
+                SavedAccountActionButton("📥 Import Codex auth", "on_import"),
+                SavedAccountActionButton("↻ Renew tokens", "on_refresh_selected", separator_before=True),
+                SavedAccountActionButton("✏ Rename", "on_rename"),
+                SavedAccountActionButton("🗑 Delete", "on_delete"),
+                SavedAccountActionButton("⟳ Reload", "on_refresh", separator_before=True),
+            )
+        )
 
     def update_current_label(self, current_account):
         if current_account:
@@ -989,39 +1051,49 @@ class CodexTab(SavedAccountsTreeTab):
         else:
             self.current_value.config(text="-", fg="#6c7086")
 
-    def refresh(self):
+    def _load_codex_refresh_state(self):
         db = self.services.db
-        self.tree.delete(*self.tree.get_children())
-
         try:
             current_codex = db.read_current_codex_account().get(db.CODEX_KEY, {})
         except Exception:
             current_codex = {}
-        self.update_current_label(current_codex)
+        return {
+            "current_codex": current_codex,
+            "current_fingerprint": current_codex.get("fingerprint"),
+        }
 
-        current_fp = current_codex.get("fingerprint")
-        for record in db.list_saved_accounts("codex"):
-            name = record["name"]
-            data = record["data"]
-            entries = data.get("entries", [])
-            codex_entry = next((entry for entry in entries if entry.get("key") == db.CODEX_KEY), None)
-            if not codex_entry:
-                continue
+    def _update_codex_refresh_state(self, refresh_state):
+        self.update_current_label(refresh_state["current_codex"])
 
-            value = codex_entry.get("value", {})
-            saved_at = format_saved_at(data)
-            account_id = shorten_account_id(value.get("accountId"))
-            expires_ms = value.get("expires") if isinstance(value.get("expires"), int) else 0
-            expires = format_saved_expires(expires_ms)
-            active = "active" if current_fp and db.account_fingerprint(value) == current_fp else "-"
-            refresh_status = format_refresh_status(data.get("refresh_status"))
-            self.tree.insert(
-                "",
-                "end",
-                iid=name,
-                values=(name, account_id, saved_at, expires, active, refresh_status),
-                tags=account_row_tags(data, expires_ms),
-            )
+    def _build_codex_saved_account_row(self, record: dict, refresh_state) -> SavedAccountTreeRow | None:
+        name = record["name"]
+        data = record["data"]
+        entries = data.get("entries", [])
+        codex_entry = next((entry for entry in entries if entry.get("key") == self.services.db.CODEX_KEY), None)
+        if not codex_entry:
+            return None
+
+        value = codex_entry.get("value", {})
+        saved_at = format_saved_at(data)
+        account_id = shorten_account_id(value.get("accountId"))
+        expires_ms = value.get("expires") if isinstance(value.get("expires"), int) else 0
+        expires = format_saved_expires(expires_ms)
+        current_fp = refresh_state["current_fingerprint"]
+        active = "active" if current_fp and self.services.db.account_fingerprint(value) == current_fp else "-"
+        refresh_status = format_refresh_status(data.get("refresh_status"))
+        return SavedAccountTreeRow(
+            iid=name,
+            values=(name, account_id, saved_at, expires, active, refresh_status),
+            tags=account_row_tags(data, expires_ms),
+        )
+
+    def refresh(self):
+        self._present_saved_account_tree(
+            "codex",
+            load_current_state=self._load_codex_refresh_state,
+            update_current_state=self._update_codex_refresh_state,
+            build_row=self._build_codex_saved_account_row,
+        )
 
     def on_save(self):
         name = ask_account_name(self.services.root, "Save Codex account", "Account name:")

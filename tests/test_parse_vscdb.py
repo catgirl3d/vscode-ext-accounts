@@ -292,6 +292,20 @@ class ParseVscdbTests(unittest.TestCase):
 
         delete_saved.assert_called_once_with(str(accounts_dir), "alice", db.CODEX_KEY, "ide")
 
+    def test_rename_saved_account_maps_value_errors_to_user_facing_error(self):
+        accounts_dir = self.root / "accounts"
+        self.patch_db("ACCOUNTS_DIR", str(accounts_dir))
+
+        with patch.object(
+            db.saved_store,
+            "rename_saved_account",
+            side_effect=ValueError("Account name contains invalid characters: /"),
+        ) as rename_saved:
+            with self.assertRaisesRegex(db.UserFacingError, "invalid characters"):
+                db.rename_saved_account("alice", "bad/name", expected_kind="ide")
+
+        rename_saved.assert_called_once_with(str(accounts_dir), db.CODEX_KEY, "alice", "bad/name", "ide")
+
     def test_refresh_saved_account_passes_expected_kind_to_loader(self):
         captured: dict[str, str] = {}
 
