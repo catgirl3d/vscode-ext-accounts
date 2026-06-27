@@ -105,10 +105,20 @@ class GuiTabsHelperTests(unittest.TestCase):
 
         delete_saved_account = Mock()
         db_module = SimpleNamespace(delete_saved_account=delete_saved_account)
-        with patch("vscode_inject.gui_tabs.os.remove") as remove:
-            gui_tabs.delete_saved_account(db_module, "alice")
-        delete_saved_account.assert_called_once_with("alice")
-        remove.assert_not_called()
+        gui_tabs.delete_saved_account(db_module, "alice", expected_kind="ide")
+        delete_saved_account.assert_called_once_with("alice", expected_kind="ide")
+
+    def test_saved_accounts_tree_tab_requires_explicit_contract_fields(self):
+        class BrokenTab(gui_tabs.SavedAccountsTreeTab):
+            def __init__(self):
+                self.tree = Mock()
+                self.services = SimpleNamespace(root=Mock())
+
+            def on_use(self):
+                return None
+
+        with self.assertRaisesRegex(RuntimeError, "must define non-empty expected_kind"):
+            BrokenTab()._configure_saved_account_tree()
 
 
 class IdeAccountsTabTests(unittest.TestCase):
@@ -299,7 +309,12 @@ class IdeAccountsTabTests(unittest.TestCase):
         with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
             tab.on_refresh_selected()
 
-        services.run_guarded.assert_called_once_with(db_module.refresh_saved_account, "alice", log_prefix="manual-refresh")
+        refresh_call = services.run_guarded.call_args
+        self.assertIsNotNone(refresh_call)
+        self.assertEqual(refresh_call.args[1:], ())
+        self.assertEqual(refresh_call.kwargs, {"log_prefix": "manual-refresh"})
+        refresh_call.args[0]()
+        db_module.refresh_saved_account.assert_called_once_with("alice", expected_kind="ide")
 
     def test_refresh_marks_expired_ide_rows_red_and_labels_them_expired(self):
         db_module = self.make_db(running=False)
@@ -702,7 +717,7 @@ class IdeAccountsTabTests(unittest.TestCase):
             "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
         ), patch("vscode_inject.gui_tabs.delete_saved_account") as delete_saved_account:
             tab.on_delete()
-        delete_saved_account.assert_called_once_with(db_module, "alice")
+        delete_saved_account.assert_called_once_with(db_module, "alice", expected_kind="ide")
         services.set_status.assert_called_once_with("Deleted 'alice'", True)
         services.refresh_all.assert_called_once_with()
 
@@ -720,6 +735,17 @@ class IdeAccountsTabTests(unittest.TestCase):
             tab.on_refresh_selected()
         services.run_guarded.assert_not_called()
 
+        db_module.refresh_saved_account.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
+            tab.on_refresh_selected()
+        refresh_call = services.run_guarded.call_args
+        self.assertIsNotNone(refresh_call)
+        self.assertEqual(refresh_call.args[1:], ())
+        self.assertEqual(refresh_call.kwargs, {"log_prefix": "manual-refresh"})
+        refresh_call.args[0]()
+        db_module.refresh_saved_account.assert_called_once_with("alice", expected_kind="ide")
+
+        services.run_guarded.reset_mock()
         tab.on_backup()
         services.run_guarded.assert_called_once_with(db_module.backup)
 
@@ -789,7 +815,12 @@ class CodexTabTests(unittest.TestCase):
         with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
             tab.on_refresh_selected()
 
-        services.run_guarded.assert_called_once_with(db_module.refresh_saved_account, "alice", log_prefix="manual-refresh")
+        refresh_call = services.run_guarded.call_args
+        self.assertIsNotNone(refresh_call)
+        self.assertEqual(refresh_call.args[1:], ())
+        self.assertEqual(refresh_call.kwargs, {"log_prefix": "manual-refresh"})
+        refresh_call.args[0]()
+        db_module.refresh_saved_account.assert_called_once_with("alice", expected_kind="codex")
 
     def test_refresh_marks_expired_codex_rows_red_and_labels_them_expired(self):
         db_module = SimpleNamespace(
@@ -1076,7 +1107,7 @@ class CodexTabTests(unittest.TestCase):
             "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
         ), patch("vscode_inject.gui_tabs.delete_saved_account") as delete_saved_account:
             tab.on_delete()
-        delete_saved_account.assert_called_once_with(db_module, "alice")
+        delete_saved_account.assert_called_once_with(db_module, "alice", expected_kind="codex")
         services.set_status.assert_called_once_with("Deleted 'alice'", True)
         services.refresh_all.assert_called_once_with()
 

@@ -278,5 +278,41 @@ class ParseVscdbTests(unittest.TestCase):
             db.import_ide_account_from_json_string("{not-json", "alice", ["kilocode"])
 
 
+    def test_delete_saved_account_maps_kind_mismatch_error(self):
+        accounts_dir = self.root / "accounts"
+        self.patch_db("ACCOUNTS_DIR", str(accounts_dir))
+
+        with patch.object(
+            db.saved_store,
+            "delete_saved_account",
+            side_effect=db.saved_store.SavedAccountKindMismatchError("codex"),
+        ) as delete_saved:
+            with self.assertRaisesRegex(db.AccountKindMismatchError, "expected 'ide'"):
+                db.delete_saved_account("alice", expected_kind="ide")
+
+        delete_saved.assert_called_once_with(str(accounts_dir), "alice", db.CODEX_KEY, "ide")
+
+    def test_refresh_saved_account_passes_expected_kind_to_loader(self):
+        captured: dict[str, str] = {}
+
+        self.patch_db(
+            "_load_saved_account_data",
+            lambda name, expected_kind=None: captured.update({"name": name, "expected_kind": expected_kind})
+            or ("account.json", {"entries": []}, "ide"),
+        )
+
+        def fake_refresh(name, **kwargs):
+            self.assertEqual(name, "alice")
+            kwargs["load_saved_account_data"]("alice")
+            return "ok"
+
+        with patch.object(db.account_services, "refresh_saved_account", side_effect=fake_refresh) as refresh_saved:
+            result = db.refresh_saved_account("alice", expected_kind="ide")
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(captured, {"name": "alice", "expected_kind": "ide"})
+        refresh_saved.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

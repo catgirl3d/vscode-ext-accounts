@@ -278,10 +278,25 @@ def rename_saved_account(
     return new_path, renamed_data, kind
 
 
-def delete_saved_account(accounts_dir: str, name: str) -> None:
+def delete_saved_account(
+    accounts_dir: str,
+    name: str,
+    codex_key: str | None = None,
+    expected_kind: str | None = None,
+) -> None:
     path = resolve_existing_account_path(accounts_dir, name)
     if not os.path.exists(path):
         raise FileNotFoundError(name)
+
+    if expected_kind:
+        if not codex_key:
+            raise ValueError("codex_key is required when expected_kind is provided.")
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        kind = saved_account_kind(data, codex_key)
+        if kind != expected_kind:
+            raise SavedAccountKindMismatchError(kind)
+
     os.remove(path)
 
 

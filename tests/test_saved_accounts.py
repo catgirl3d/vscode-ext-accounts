@@ -145,8 +145,29 @@ class SavedAccountsTests(TempDirTestCase):
         self.assertEqual(written_path.name, "alice account.json")
         self.assertEqual(self.read_json(written_path)["name"], "alice account")
 
-        saved_accounts.delete_saved_account(str(accounts_dir), " alice account ")
+        saved_accounts.delete_saved_account(
+            str(accounts_dir),
+            " alice account ",
+            "codex://openai",
+            expected_kind="ide",
+        )
         self.assertFalse(written_path.exists())
+
+    def test_delete_saved_account_rejects_wrong_expected_kind_without_removing_file(self):
+        accounts_dir = self.root / "accounts"
+        path = accounts_dir / "alice.json"
+        self.write_json(path, {"name": "alice", "kind": "codex", "entries": []})
+
+        with self.assertRaises(saved_accounts.SavedAccountKindMismatchError) as ctx:
+            saved_accounts.delete_saved_account(
+                str(accounts_dir),
+                "alice",
+                "codex://openai",
+                expected_kind="ide",
+            )
+
+        self.assertEqual(ctx.exception.actual_kind, "codex")
+        self.assertTrue(path.exists())
 
     def test_rename_saved_account_rolls_back_when_rewrite_fails(self):
         accounts_dir = self.root / "accounts"
