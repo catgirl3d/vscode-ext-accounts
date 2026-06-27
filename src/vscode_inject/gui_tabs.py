@@ -12,8 +12,10 @@ from . import saved_account_status
 
 
 IDE_EXTENSION_ORDER = ("kilocode", "roo-cline", "kilo-new")
+SUCCESS_GREEN = "#a6e3a1"
 EXPIRED_ROW_TAG = "expired"
 EXPIRED_ROW_FG = "#f38ba8"
+REFRESH_OK_ROW_TAG = "refresh_ok"
 REFRESH_ERROR_ROW_TAG = "refresh_error"
 REFRESH_ERROR_ROW_FG = "#fab387"
 TERMINAL_REFRESH_ERROR_ROW_TAG = "terminal_refresh_error"
@@ -110,7 +112,12 @@ def account_row_tags(data, expires_ms, now_ms=None):
         return (TERMINAL_REFRESH_ERROR_ROW_TAG,)
     if status == saved_account_status.REFRESH_STATUS_ERROR:
         return (REFRESH_ERROR_ROW_TAG,)
-    return expires_row_tags(expires_ms, now_ms=now_ms)
+    expire_tags = expires_row_tags(expires_ms, now_ms=now_ms)
+    if expire_tags:
+        return expire_tags
+    if status == saved_account_status.REFRESH_STATUS_OK:
+        return (REFRESH_OK_ROW_TAG,)
+    return ()
 
 
 def shorten_account_id(account_id, limit=12):
@@ -413,7 +420,7 @@ class IdeAccountsTab:
         header.grid_columnconfigure(1, weight=0)
         header.grid_columnconfigure(2, weight=1)
 
-        ide_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_bg, highlightthickness=1)
+        ide_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_act, highlightthickness=1)
         ide_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         tk.Label(ide_card, text="Target IDE", bg=SECTION_BG, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(anchor="w")
         ide_top = tk.Frame(ide_card, bg=SECTION_BG)
@@ -433,7 +440,7 @@ class IdeAccountsTab:
                 font=("Segoe UI", 9, "bold"),
             ).pack(side="left", padx=(0, 10))
 
-        runtime_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_bg, highlightthickness=1)
+        runtime_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_act, highlightthickness=1)
         runtime_card.grid(row=0, column=1, sticky="nsew", padx=4)
         runtime_card.grid_columnconfigure(0, minsize=runtime_status_width)
         tk.Label(runtime_card, text="Runtime status", bg=SECTION_BG, fg="#6c7086", font=section_label_font).grid(row=0, column=0, sticky="w")
@@ -449,7 +456,7 @@ class IdeAccountsTab:
         )
         self.ide_state_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
 
-        ext_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_bg, highlightthickness=1)
+        ext_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_act, highlightthickness=1)
         ext_card.grid(row=0, column=2, sticky="nsew", padx=(4, 0))
         tk.Label(ext_card, text="Extensions", bg=SECTION_BG, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(anchor="w")
         ide_ext_frame = tk.Frame(ext_card, bg=SECTION_BG)
@@ -472,7 +479,7 @@ class IdeAccountsTab:
             bg=SECTION_BG,
             padx=8,
             pady=6,
-            highlightbackground=self.services.btn_bg,
+            highlightbackground=self.services.btn_act,
             highlightthickness=1,
         )
         current_ide_frame.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
@@ -508,20 +515,21 @@ class IdeAccountsTab:
 
         ide_cols = ("name", "ext", "accountIds", "saved", "expires", "active", "status")
         self.tree = ttk.Treeview(self.frame, columns=ide_cols, show="headings", height=8, selectmode="browse")
-        self.tree.heading("name", text="Name")
-        self.tree.heading("ext", text="Ext")
-        self.tree.heading("accountIds", text="Account IDs")
-        self.tree.heading("saved", text="Saved")
-        self.tree.heading("expires", text="Expires")
-        self.tree.heading("active", text="Active")
-        self.tree.heading("status", text="Status")
+        self.tree.heading("name", text="Name", anchor="center")
+        self.tree.heading("ext", text="Ext", anchor="center")
+        self.tree.heading("accountIds", text="Account IDs", anchor="center")
+        self.tree.heading("saved", text="Saved", anchor="center")
+        self.tree.heading("expires", text="Expires", anchor="center")
+        self.tree.heading("active", text="Active", anchor="center")
+        self.tree.heading("status", text="Status", anchor="center")
         self.tree.column("name", width=225, anchor="w")
-        self.tree.column("ext", width=75, anchor="w")
-        self.tree.column("accountIds", width=100, anchor="w")
+        self.tree.column("ext", width=75, anchor="center")
+        self.tree.column("accountIds", width=100, anchor="center")
         self.tree.column("saved", width=112, anchor="center")
         self.tree.column("expires", width=80, anchor="center")
         self.tree.column("active", width=60, anchor="center")
         self.tree.column("status", width=60, anchor="center")
+        self.tree.tag_configure(REFRESH_OK_ROW_TAG, foreground=SUCCESS_GREEN)
         self.tree.tag_configure(EXPIRED_ROW_TAG, foreground=EXPIRED_ROW_FG)
         self.tree.tag_configure(REFRESH_ERROR_ROW_TAG, foreground=REFRESH_ERROR_ROW_FG)
         self.tree.tag_configure(TERMINAL_REFRESH_ERROR_ROW_TAG, foreground=TERMINAL_REFRESH_ERROR_ROW_FG)
@@ -605,7 +613,7 @@ class IdeAccountsTab:
             info = current_accounts.get(ext_id)
             short = db._EXT_DISPLAY.get(ext_id, ext_id)
             if info:
-                widget.config(text=f"{short}: {shorten_account_id(info.get('accountId'))}", fg="#a6e3a1")
+                widget.config(text=f"{short}: {shorten_account_id(info.get('accountId'))}", fg=SUCCESS_GREEN)
             else:
                 widget.config(text=f"{short}: -", fg="#6c7086")
 
@@ -618,7 +626,7 @@ class IdeAccountsTab:
 
         ide_cfg = self.services.db.IDE_PATHS[current_ide]
         state_str = "running !" if running else "closed OK"
-        state_color = "#c0392b" if running else "#2d8a4e"
+        state_color = "#c0392b" if running else SUCCESS_GREEN
         self.ide_state_label.config(text=f"{ide_cfg['label']}: {state_str}", fg=state_color)
         self.update_run_button_visibility(running)
         self._last_runtime_state = runtime_state
@@ -856,7 +864,7 @@ class CodexTab:
             bg=SECTION_BG,
             padx=8,
             pady=6,
-            highlightbackground=self.services.btn_bg,
+            highlightbackground=self.services.btn_act,
             highlightthickness=1,
         )
         current_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
@@ -879,7 +887,7 @@ class CodexTab:
             bg=SECTION_BG,
             padx=8,
             pady=6,
-            highlightbackground=self.services.btn_bg,
+            highlightbackground=self.services.btn_act,
             highlightthickness=1,
         )
         auth_card.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
@@ -897,18 +905,19 @@ class CodexTab:
 
         cols = ("name", "accountId", "saved", "expires", "active", "status")
         self.tree = ttk.Treeview(self.frame, columns=cols, show="headings", height=8, selectmode="browse")
-        self.tree.heading("name", text="Name")
-        self.tree.heading("accountId", text="Account ID")
-        self.tree.heading("saved", text="Saved")
-        self.tree.heading("expires", text="Expires")
-        self.tree.heading("active", text="Active")
-        self.tree.heading("status", text="Status")
+        self.tree.heading("name", text="Name", anchor="center")
+        self.tree.heading("accountId", text="Account ID", anchor="center")
+        self.tree.heading("saved", text="Saved", anchor="center")
+        self.tree.heading("expires", text="Expires", anchor="center")
+        self.tree.heading("active", text="Active", anchor="center")
+        self.tree.heading("status", text="Status", anchor="center")
         self.tree.column("name", width=150, anchor="w")
-        self.tree.column("accountId", width=180, anchor="w")
+        self.tree.column("accountId", width=180, anchor="center")
         self.tree.column("saved", width=120, anchor="center")
         self.tree.column("expires", width=100, anchor="center")
         self.tree.column("active", width=90, anchor="center")
         self.tree.column("status", width=90, anchor="center")
+        self.tree.tag_configure(REFRESH_OK_ROW_TAG, foreground=SUCCESS_GREEN)
         self.tree.tag_configure(EXPIRED_ROW_TAG, foreground=EXPIRED_ROW_FG)
         self.tree.tag_configure(REFRESH_ERROR_ROW_TAG, foreground=REFRESH_ERROR_ROW_FG)
         self.tree.tag_configure(TERMINAL_REFRESH_ERROR_ROW_TAG, foreground=TERMINAL_REFRESH_ERROR_ROW_FG)
@@ -933,7 +942,7 @@ class CodexTab:
 
     def update_current_label(self, current_account):
         if current_account:
-            self.current_value.config(text=shorten_account_id(current_account.get("accountId")), fg="#a6e3a1")
+            self.current_value.config(text=shorten_account_id(current_account.get("accountId")), fg=SUCCESS_GREEN)
         else:
             self.current_value.config(text="-", fg="#6c7086")
 

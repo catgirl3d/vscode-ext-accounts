@@ -52,6 +52,10 @@ class GuiTabsHelperTests(unittest.TestCase):
             (gui_tabs.REFRESH_ERROR_ROW_TAG,),
         )
         self.assertEqual(
+            gui_tabs.account_row_tags({"refresh_status": gui_tabs.saved_account_status.REFRESH_STATUS_OK}, 86_400_000, now_ms=1_000),
+            (gui_tabs.REFRESH_OK_ROW_TAG,),
+        )
+        self.assertEqual(
             gui_tabs.account_row_tags({}, 1_000, now_ms=2_000),
             (EXPIRED_ROW_TAG,),
         )
@@ -340,7 +344,7 @@ class IdeAccountsTabTests(unittest.TestCase):
                             "key": db_module.IDE_EXTENSIONS["kilocode"],
                             "value": {
                                 "accountId": "acct-1",
-                                "expires": 86_400_000,
+                                "expires": 4_102_444_800_000,
                             },
                         }
                     ],
@@ -354,6 +358,35 @@ class IdeAccountsTabTests(unittest.TestCase):
 
         self.assertEqual(tab.tree.item("invalid_ide", "tags"), (gui_tabs.TERMINAL_REFRESH_ERROR_ROW_TAG,))
         self.assertEqual(tab.tree.item("invalid_ide", "values")[6], "invalid")
+
+    def test_refresh_marks_ok_ide_rows_green(self):
+        db_module = self.make_db(running=False)
+        db_module.list_saved_accounts = lambda kind: [
+            {
+                "name": "ok_ide",
+                "data": {
+                    "ext": "kilocode",
+                    "saved_at": "2026-05-15T10:00:00",
+                    "refresh_status": db.oauth_refresh.REFRESH_STATUS_OK,
+                    "entries": [
+                        {
+                            "key": db_module.IDE_EXTENSIONS["kilocode"],
+                            "value": {
+                                "accountId": "acct-1",
+                                "expires": 4_102_444_800_000,
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, self.make_services(db_module))
+
+        tab.refresh()
+
+        self.assertEqual(tab.tree.item("ok_ide", "tags"), (gui_tabs.REFRESH_OK_ROW_TAG,))
+        self.assertEqual(tab.tree.item("ok_ide", "values")[6], "ok")
 
     def test_helper_methods_cover_selection_labels_and_current_account_rendering(self):
         db_module = self.make_db(running=False)
@@ -810,7 +843,7 @@ class CodexTabTests(unittest.TestCase):
                                 "key": "codex://openai",
                                 "value": {
                                     "accountId": "acct-codex",
-                                    "expires": 86_400_000,
+                                    "expires": 4_102_444_800_000,
                                 },
                             }
                         ],
@@ -829,6 +862,42 @@ class CodexTabTests(unittest.TestCase):
 
         self.assertEqual(tab.tree.item("errored_codex", "tags"), (gui_tabs.REFRESH_ERROR_ROW_TAG,))
         self.assertEqual(tab.tree.item("errored_codex", "values")[5], "error")
+
+    def test_refresh_marks_ok_codex_rows_green(self):
+        db_module = SimpleNamespace(
+            CODEX_AUTH_PATH="C:/Users/Test/.codex/auth.json",
+            CODEX_KEY="codex://openai",
+            read_current_codex_account=lambda: {},
+            list_saved_accounts=lambda kind: [
+                {
+                    "name": "ok_codex",
+                    "data": {
+                        "saved_at": "2026-05-15T10:00:00",
+                        "refresh_status": db.oauth_refresh.REFRESH_STATUS_OK,
+                        "entries": [
+                            {
+                                "key": "codex://openai",
+                                "value": {
+                                    "accountId": "acct-codex",
+                                    "expires": 4_102_444_800_000,
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            account_fingerprint=lambda value: None,
+            refresh_saved_account=Mock(name="refresh_saved_account"),
+            rename_saved_account=Mock(name="rename_saved_account"),
+        )
+        services = self.make_services(db_module)
+        notebook = ttk.Notebook(self.root)
+        tab = CodexTab(notebook, services)
+
+        tab.refresh()
+
+        self.assertEqual(tab.tree.item("ok_codex", "tags"), (gui_tabs.REFRESH_OK_ROW_TAG,))
+        self.assertEqual(tab.tree.item("ok_codex", "values")[5], "ok")
 
     def test_update_current_label_refresh_and_handlers_cover_remaining_codex_branches(self):
         db_module = SimpleNamespace(

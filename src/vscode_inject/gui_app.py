@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from . import parse_vscdb as db
 from . import refresh_scheduler
-from .gui_tabs import CodexTab, GuiServices, IdeAccountsTab
+from .gui_tabs import CodexTab, GuiServices, IdeAccountsTab, SUCCESS_GREEN
 
 
 WINDOW_WIDTH = 980
@@ -23,6 +23,8 @@ BG = "#1e1e2e"
 FG = "#cdd6f4"
 BTN_BG = "#313244"
 BTN_ACT = "#45475a"
+HEADER_BG = "#3a3d52"
+HEADER_BORDER = "#42465e"
 SEL_BG = "#89b4fa"
 SEL_FG = "#1e1e2e"
 
@@ -122,7 +124,7 @@ def main():
     status_var = tk.StringVar(value="Ready")
 
     def set_status(msg, ok=True):
-        color = "#2d8a4e" if ok else "#c0392b"
+        color = SUCCESS_GREEN if ok else "#c0392b"
         status_var.set(msg)
         status_label.config(fg=color)
 
@@ -136,23 +138,63 @@ def main():
 
     style = ttk.Style()
     style.theme_use("clam")
-    style.configure("Treeview", background="#181825", fieldbackground="#181825", foreground=FG, rowheight=26, font=("Segoe UI", 10))
-    style.configure("Treeview.Heading", background=BTN_BG, foreground=FG, font=("Segoe UI", 9, "bold"))
-    style.map("Treeview.Heading", background=[("active", BTN_BG), ("pressed", BTN_BG)], foreground=[("active", FG), ("pressed", FG)])
+    style.configure(
+        "Treeview",
+        background="#181825",
+        fieldbackground="#181825",
+        foreground=FG,
+        rowheight=26,
+        font=("Segoe UI", 10),
+        borderwidth=1,
+        relief="flat",
+        bordercolor=BTN_ACT,
+        lightcolor=BTN_ACT,
+        darkcolor=BTN_ACT,
+    )
+    style.configure(
+        "Treeview.Heading",
+        background=HEADER_BG,
+        foreground=FG,
+        font=("Segoe UI", 9, "bold"),
+        relief="raised",
+        borderwidth=1,
+        bordercolor=HEADER_BORDER,
+        lightcolor=HEADER_BORDER,
+        darkcolor=BTN_ACT,
+    )
+    style.map("Treeview.Heading", background=[("active", HEADER_BG), ("pressed", HEADER_BG)], foreground=[("active", FG), ("pressed", FG)])
     style.map("Treeview", background=[("selected", SEL_BG)], foreground=[("selected", SEL_FG)])
-    style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
+    style.configure(
+        "TNotebook",
+        background=BG,
+        borderwidth=1,
+        relief="flat",
+        tabmargins=(0, 0, 0, 0),
+        bordercolor=BTN_ACT,
+        lightcolor=BTN_ACT,
+        darkcolor=BTN_ACT,
+        focuscolor=BTN_ACT,
+    )
     style.configure(
         "TNotebook.Tab",
         background=BTN_BG,
         foreground=FG,
         padding=(14, 8),
         borderwidth=1,
+        bordercolor=BTN_ACT,
+        lightcolor=BTN_ACT,
+        darkcolor=BTN_ACT,
+        focuscolor=BTN_ACT,
         font=("Segoe UI", 9, "bold"),
     )
     style.map(
         "TNotebook.Tab",
         background=[("selected", SEL_BG), ("!selected", BTN_BG)],
         foreground=[("selected", SEL_FG), ("!selected", FG)],
+        bordercolor=[("selected", BTN_ACT), ("!selected", BTN_ACT)],
+        lightcolor=[("selected", BTN_ACT), ("!selected", BTN_ACT)],
+        darkcolor=[("selected", BTN_ACT), ("!selected", BTN_ACT)],
+        focuscolor=[("selected", BTN_ACT), ("!selected", BTN_ACT)],
         padding=[("selected", (14, 8)), ("!selected", (14, 8))],
         expand=[("selected", (0, 0, 0, 0)), ("!selected", (0, 0, 0, 0))],
     )
@@ -222,7 +264,7 @@ def main():
 
     services.refresh_all = refresh_all
 
-    status_label = tk.Label(root, textvariable=status_var, bg=BG, fg="#2d8a4e", font=("Segoe UI", 9), anchor="w")
+    status_label = tk.Label(root, textvariable=status_var, bg=BG, fg=SUCCESS_GREEN, font=("Segoe UI", 9), anchor="w")
     status_label.pack(fill="x", padx=10, pady=(0, 8))
 
     refresh_all()
