@@ -478,7 +478,7 @@ class IdeAccountsTab:
         self.btn_frame = tk.Frame(self.frame, bg=bg)
         self.btn_frame.pack(padx=10, pady=(0, 6))
         tab_button(self.btn_frame, self.services, "💾 Save current", self.on_save, accent=True)
-        tab_button(self.btn_frame, self.services, "📥 Paste account", self.on_import_clipboard)
+        tab_button(self.btn_frame, self.services, "📥 Import account", self.on_import_clipboard)
         tab_button(self.btn_frame, self.services, "▶ Use selected", self.on_use)
         tab_button(self.btn_frame, self.services, "↻ Refresh selected", self.on_refresh_selected)
         tab_button(self.btn_frame, self.services, "✏ Rename", self.on_rename)
