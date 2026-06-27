@@ -23,6 +23,7 @@ OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 KILO_NEW_KEY = "kilo-new://openai"
 CODEX_KEY = "codex://openai"
 DEFAULT_EXPIRES_IN_SECONDS = 3600
+AUTO_REFRESH_DISABLED_GROUPS_KEY = "auto_refresh_disabled_groups"
 TERMINAL_REFRESH_ERROR_CODES = {
     "access_denied",
     "invalid_client",
@@ -140,6 +141,50 @@ class RefreshGroup:
 
 
 RefreshOperation = Callable[[TokenBundle], TokenBundle]
+
+
+def _serialize_refresh_group_key(key: RefreshGroupKey) -> dict[str, str]:
+    return {
+        "provider": key.provider,
+        "refresh_token": key.refresh_token,
+    }
+
+
+def _parse_refresh_group_key(raw: Any) -> RefreshGroupKey | None:
+    if not isinstance(raw, Mapping):
+        return None
+
+    provider = raw.get("provider")
+    refresh_token = raw.get("refresh_token")
+    if not isinstance(provider, str) or not provider:
+        return None
+    if not isinstance(refresh_token, str) or not refresh_token:
+        return None
+    return RefreshGroupKey(provider=provider, refresh_token=refresh_token)
+
+
+def auto_refresh_disabled_group_keys(data: Mapping[str, Any]) -> set[RefreshGroupKey]:
+    raw_keys = data.get(AUTO_REFRESH_DISABLED_GROUPS_KEY)
+    if not isinstance(raw_keys, list):
+        return set()
+
+    disabled_keys: set[RefreshGroupKey] = set()
+    for raw_key in raw_keys:
+        group_key = _parse_refresh_group_key(raw_key)
+        if group_key is not None:
+            disabled_keys.add(group_key)
+    return disabled_keys
+
+
+def set_auto_refresh_disabled_group_keys(data: dict[str, Any], keys: set[RefreshGroupKey]) -> None:
+    if not keys:
+        data.pop(AUTO_REFRESH_DISABLED_GROUPS_KEY, None)
+        return
+
+    data[AUTO_REFRESH_DISABLED_GROUPS_KEY] = [
+        _serialize_refresh_group_key(key)
+        for key in sorted(keys, key=lambda item: (item.provider, item.refresh_token))
+    ]
 
 
 def current_time_ms() -> int:
@@ -426,6 +471,17 @@ def collect_refreshable_entries(entries: Sequence[Mapping[str, Any]]) -> list[Re
     return refreshable
 
 
+def group_keys_from_entries(entries: Sequence[Mapping[str, Any]]) -> tuple[RefreshGroupKey, ...]:
+    seen: OrderedDict[RefreshGroupKey, None] = OrderedDict()
+    for refreshable in collect_refreshable_entries(entries):
+        group_key = RefreshGroupKey(
+            provider=refreshable.provider,
+            refresh_token=refreshable.bundle.refresh_token,
+        )
+        seen.setdefault(group_key, None)
+    return tuple(seen.keys())
+
+
 def saved_account_records(records: Sequence[Mapping[str, Any]]) -> list[SavedAccountRecord]:
     normalized: list[SavedAccountRecord] = []
 
@@ -457,11 +513,16 @@ def _group_expires(entries: Sequence[RefreshableRecordEntry]) -> int:
     return min(expires_values, default=0)
 
 
-def collect_refresh_groups(records: Sequence[SavedAccountRecord]) -> list[RefreshGroup]:
+def collect_refresh_groups(
+    records: Sequence[SavedAccountRecord],
+    *,
+    skip_disabled_auto_refresh_groups: bool = False,
+) -> list[RefreshGroup]:
     grouped: OrderedDict[RefreshGroupKey, list[RefreshableRecordEntry]] = OrderedDict()
 
     for record in records:
         entries = record.data.get("entries", []) if isinstance(record.data, Mapping) else []
+        disabled_group_keys = auto_refresh_disabled_group_keys(record.data) if skip_disabled_auto_refresh_groups else set()
         if not isinstance(entries, list):
             continue
 
@@ -479,6 +540,8 @@ def collect_refresh_groups(records: Sequence[SavedAccountRecord]) -> list[Refres
 
             bundle = token_bundle_from_value(value)
             group_key = RefreshGroupKey(provider=provider, refresh_token=bundle.refresh_token)
+            if group_key in disabled_group_keys:
+                continue
             grouped.setdefault(group_key, []).append(
                 RefreshableRecordEntry(
                     record_name=record.name,
@@ -498,6 +561,38 @@ def collect_refresh_groups(records: Sequence[SavedAccountRecord]) -> list[Refres
         )
         for group_key, entries in grouped.items()
     ]
+
+
+def apply_auto_refresh_disabled_group_updates(
+    records_by_path: Mapping[str, SavedAccountRecord],
+    group_keys: Sequence[RefreshGroupKey],
+    *,
+    disabled: bool,
+) -> dict[str, dict[str, Any]]:
+    target_keys = set(group_keys)
+    if not target_keys:
+        return {}
+
+    updates: dict[str, dict[str, Any]] = {}
+    for record in records_by_path.values():
+        entries = record.data.get("entries", []) if isinstance(record.data, Mapping) else []
+        if not isinstance(entries, list):
+            continue
+
+        matched_keys = set(group_keys_from_entries(entries)) & target_keys
+        if not matched_keys:
+            continue
+
+        updated_record = copy.deepcopy(dict(record.data))
+        disabled_group_keys = auto_refresh_disabled_group_keys(updated_record)
+        if disabled:
+            disabled_group_keys.update(matched_keys)
+        else:
+            disabled_group_keys.difference_update(matched_keys)
+        set_auto_refresh_disabled_group_keys(updated_record, disabled_group_keys)
+        updates[record.path] = updated_record
+
+    return updates
 
 
 def refresh_due_at_ms(group: RefreshGroup, refresh_before_ms: int) -> int:
@@ -542,6 +637,9 @@ def apply_refreshed_group(
         updated_record["refresh_status"] = REFRESH_STATUS_OK
         updated_record.pop("refresh_error", None)
         updated_record.pop("refresh_error_at", None)
+        disabled_group_keys = auto_refresh_disabled_group_keys(updated_record)
+        disabled_group_keys.discard(group.key)
+        set_auto_refresh_disabled_group_keys(updated_record, disabled_group_keys)
 
     return updated_records
 
@@ -553,6 +651,7 @@ def apply_refresh_error(
     status: str,
     error_message: str,
     error_at: str | None = None,
+    disable_auto_refresh_group: bool = False,
 ) -> dict[str, dict[str, Any]]:
     timestamp = error_at or current_time_iso()
     updated_records: dict[str, dict[str, Any]] = {}
@@ -566,6 +665,10 @@ def apply_refresh_error(
         updated_record["refresh_status"] = status
         updated_record["refresh_error"] = error_message
         updated_record["refresh_error_at"] = timestamp
+        if disable_auto_refresh_group:
+            disabled_group_keys = auto_refresh_disabled_group_keys(updated_record)
+            disabled_group_keys.add(group.key)
+            set_auto_refresh_disabled_group_keys(updated_record, disabled_group_keys)
 
     return updated_records
 
@@ -599,18 +702,25 @@ def refresh_saved_entries(
         )
 
     refreshers = dict(refreshers or DEFAULT_REFRESHERS)
-    grouped: OrderedDict[tuple[str, str], list[RefreshableEntry]] = OrderedDict()
+    grouped: OrderedDict[RefreshGroupKey, list[RefreshableEntry]] = OrderedDict()
     for refreshable in refreshable_entries:
-        group_key = (refreshable.provider, refreshable.bundle.refresh_token)
+        group_key = RefreshGroupKey(
+            provider=refreshable.provider,
+            refresh_token=refreshable.bundle.refresh_token,
+        )
         grouped.setdefault(group_key, []).append(refreshable)
 
     updated_entries = copy.deepcopy(list(entries))
-    for (provider, _refresh_token), grouped_entries in grouped.items():
-        refresher = refreshers.get(provider)
+    for group_key, grouped_entries in grouped.items():
+        refresher = refreshers.get(group_key.provider)
         if refresher is None:
-            raise UnsupportedSavedAccountError(f"No refresher is registered for provider '{provider}'.")
+            raise UnsupportedSavedAccountError(f"No refresher is registered for provider '{group_key.provider}'.")
 
-        refreshed_bundle = refresher(grouped_entries[0].bundle)
+        try:
+            refreshed_bundle = refresher(grouped_entries[0].bundle)
+        except OAuthRefreshError as exc:
+            setattr(exc, "refresh_group_key", group_key)
+            raise
         for refreshable in grouped_entries:
             updated_entry = dict(updated_entries[refreshable.index])
             updated_entry["value"] = apply_refreshed_bundle(refreshable.entry.get("value", {}), refreshed_bundle)

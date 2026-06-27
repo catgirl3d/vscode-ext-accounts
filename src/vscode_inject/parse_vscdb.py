@@ -661,6 +661,7 @@ def refresh_saved_account(name: str, expected_kind: str | None = None) -> str:
         name,
         operation_lock=SAVED_ACCOUNT_REFRESH_LOCK,
         load_saved_account_data=lambda account_name: _load_saved_account_data(account_name, expected_kind=expected_kind),
+        list_saved_accounts=list_saved_accounts,
         oauth_refresh_module=oauth_refresh,
         is_terminal_refresh_error=oauth_refresh.is_terminal_refresh_error,
         write_saved_account_batch=write_saved_account_batch,

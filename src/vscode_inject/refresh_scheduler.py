@@ -98,8 +98,9 @@ class AutoRefreshScheduler:
     def _run_once_locked(self) -> AutoRefreshResult:
         now_ms = self._now_ms()
         records = oauth_refresh.saved_account_records(self._list_saved_accounts())
-        groups = oauth_refresh.collect_refresh_groups(records)
-        self._prune_group_states(groups)
+        all_groups = oauth_refresh.collect_refresh_groups(records)
+        groups = oauth_refresh.collect_refresh_groups(records, skip_disabled_auto_refresh_groups=True)
+        self._prune_group_states(all_groups)
 
         due_groups = [group for group in groups if self._is_group_due(group, now_ms)]
         if not due_groups:
@@ -164,6 +165,7 @@ class AutoRefreshScheduler:
                         status=saved_account_status.REFRESH_STATUS_TERMINAL_ERROR,
                         error_message=error_message,
                         error_at=self._now_iso(),
+                        disable_auto_refresh_group=True,
                     )
                     self._write_saved_account_batch(updated_records)
                     for path, data in updated_records.items():
@@ -175,8 +177,12 @@ class AutoRefreshScheduler:
                             data=data,
                         )
 
-        final_groups = oauth_refresh.collect_refresh_groups(list(records_by_path.values()))
-        self._prune_group_states(final_groups)
+        final_all_groups = oauth_refresh.collect_refresh_groups(list(records_by_path.values()))
+        final_groups = oauth_refresh.collect_refresh_groups(
+            list(records_by_path.values()),
+            skip_disabled_auto_refresh_groups=True,
+        )
+        self._prune_group_states(final_all_groups)
         terminal_failures = sum(1 for failure in failures if failure.terminal)
 
         return AutoRefreshResult(

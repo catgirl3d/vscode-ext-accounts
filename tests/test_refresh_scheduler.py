@@ -248,7 +248,7 @@ class RefreshSchedulerTests(unittest.TestCase):
                                 "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
                                 "access_token": "old-access",
                                 "refresh_token": "dead-refresh",
-                                "expires": 1_500,
+                                "expires": current_time["value"] + 24 * 60 * 60 * 1000,
                                 "accountId": "acct-dead",
                             },
                         }
@@ -301,9 +301,15 @@ class RefreshSchedulerTests(unittest.TestCase):
                                     "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
                                     "access_token": "old-access",
                                     "refresh_token": "dead-refresh",
-                                    "expires": 1_500,
+                                    "expires": current_time["value"] + 24 * 60 * 60 * 1000,
                                     "accountId": "acct-dead",
                                 },
+                            }
+                        ],
+                        "auto_refresh_disabled_groups": [
+                            {
+                                "provider": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                "refresh_token": "dead-refresh",
                             }
                         ],
                         "refresh_status": oauth_refresh.REFRESH_STATUS_TERMINAL_ERROR,
@@ -321,6 +327,61 @@ class RefreshSchedulerTests(unittest.TestCase):
         self.assertEqual(second.failed_groups, 0)
         self.assertEqual(second.next_delay_ms, scheduler.policy.scan_interval_ms)
         self.assertEqual(attempts["count"], 1)
+
+    def test_run_once_skips_persisted_terminal_auto_refresh_groups_after_restart(self):
+        now_ms = 1_000
+        raw_records = [
+            {
+                "name": "codex3",
+                "path": "codex3.json",
+                "kind": "codex",
+                "readable": True,
+                "data": {
+                    "entries": [
+                        {
+                            "key": oauth_refresh.CODEX_KEY,
+                            "value": {
+                                "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                "access_token": "old-access",
+                                "refresh_token": "dead-refresh",
+                                "expires": now_ms + 24 * 60 * 60 * 1000,
+                                "accountId": "acct-dead",
+                            },
+                        }
+                    ],
+                    "refresh_status": oauth_refresh.REFRESH_STATUS_TERMINAL_ERROR,
+                    "refresh_error": "invalid_grant",
+                    "refresh_error_at": "2026-05-15T18:00:00Z",
+                    "auto_refresh_disabled_groups": [
+                        {
+                            "provider": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                            "refresh_token": "dead-refresh",
+                        }
+                    ],
+                },
+            }
+        ]
+        attempts = {"count": 0}
+
+        def terminal_refresher(bundle: oauth_refresh.TokenBundle) -> oauth_refresh.TokenBundle:
+            attempts["count"] += 1
+            raise AssertionError("disabled auto-refresh group should not be refreshed")
+
+        scheduler = refresh_scheduler.AutoRefreshScheduler(
+            list_saved_accounts=lambda: raw_records,
+            write_saved_account_batch=lambda updates: None,
+            persist_refreshed_group=lambda updates, _group: None,
+            refreshers={oauth_refresh.OPENAI_CODEX_PROVIDER: terminal_refresher},
+            now_ms=lambda: now_ms,
+        )
+
+        result = scheduler.run_once()
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.due_groups, 0)
+        self.assertEqual(result.failed_groups, 0)
+        self.assertEqual(result.next_delay_ms, scheduler.policy.scan_interval_ms)
+        self.assertEqual(attempts["count"], 0)
 
     def test_run_once_disables_group_when_local_write_fails_after_successful_refresh(self):
         current_time = {"value": 1_000}

@@ -265,6 +265,7 @@ def refresh_saved_account(
     *,
     operation_lock,
     load_saved_account_data,
+    list_saved_accounts=None,
     oauth_refresh_module,
     is_terminal_refresh_error: Callable[[Exception], bool],
     write_saved_account_batch,
@@ -274,6 +275,8 @@ def refresh_saved_account(
 ) -> str:
     with operation_lock:
         path, account_data, _kind = load_saved_account_data(name)
+        saved_records = oauth_refresh_module.saved_account_records(list_saved_accounts()) if list_saved_accounts else []
+        records_by_path = {record.path: record for record in saved_records}
         entries = account_data.get("entries", []) if isinstance(account_data, dict) else []
         if not isinstance(entries, list):
             raise ValueError(f"Account '{name}' has an invalid entries payload.")
@@ -288,14 +291,30 @@ def refresh_saved_account(
         try:
             refreshed = oauth_refresh_module.refresh_saved_entries(entries)
         except oauth_refresh_module.OAuthRefreshError as exc:
+            terminal_error = is_terminal_refresh_error(exc)
             updated_data["refresh_status"] = (
                 saved_account_status.REFRESH_STATUS_TERMINAL_ERROR
-                if is_terminal_refresh_error(exc)
+                if terminal_error
                 else saved_account_status.REFRESH_STATUS_ERROR
             )
             updated_data["refresh_error"] = str(exc)
             updated_data["refresh_error_at"] = oauth_refresh_module.current_time_iso()
-            write_saved_account_batch({path: updated_data})
+            updates = {path: updated_data}
+            failed_group_key = getattr(exc, "refresh_group_key", None)
+            if terminal_error and failed_group_key is not None:
+                updates.update(
+                    oauth_refresh_module.apply_auto_refresh_disabled_group_updates(
+                        records_by_path,
+                        (failed_group_key,),
+                        disabled=True,
+                    )
+                )
+                disabled_group_keys = oauth_refresh_module.auto_refresh_disabled_group_keys(updated_data)
+                disabled_group_keys.add(failed_group_key)
+                oauth_refresh_module.set_auto_refresh_disabled_group_keys(updated_data, disabled_group_keys)
+                updates[path] = updated_data
+
+            write_saved_account_batch(updates)
             raise saved_account_refresh_error_cls(f"Token renewal failed for '{name}': {exc}") from exc
 
         updated_data["entries"] = refreshed.entries
@@ -303,11 +322,25 @@ def refresh_saved_account(
         updated_data["refresh_status"] = saved_account_status.REFRESH_STATUS_OK
         updated_data.pop("refresh_error", None)
         updated_data.pop("refresh_error_at", None)
+        updated_data.pop(getattr(oauth_refresh_module, "AUTO_REFRESH_DISABLED_GROUPS_KEY", "auto_refresh_disabled_groups"), None)
+        refreshed_group_keys = oauth_refresh_module.group_keys_from_entries(refreshed.entries)
+        updates = oauth_refresh_module.apply_auto_refresh_disabled_group_updates(
+            records_by_path,
+            refreshed_group_keys,
+            disabled=False,
+        )
+        updates[path] = updated_data
+        account_names: list[str] = []
+        for updated_path in updates:
+            record = records_by_path.get(updated_path)
+            record_name = record.name if record is not None else (name if updated_path == path else updated_path)
+            if record_name not in account_names:
+                account_names.append(record_name)
         try:
             persist_refreshed_saved_account_batch(
-                {path: updated_data},
+                updates,
                 subject_label=f"saved account '{name}'",
-                account_names=(name,),
+                account_names=tuple(account_names or [name]),
                 providers=providers,
                 operation="manual-refresh",
             )

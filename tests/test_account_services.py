@@ -146,18 +146,90 @@ class AccountServicesModuleTests(TempDirTestCase):
             pass
 
         write_calls: list[tuple[str, dict]] = []
+        terminal_exc = DummyOAuthRefreshError("refresh failed")
+        terminal_exc.refresh_group_key = oauth_refresh.RefreshGroupKey(
+            provider=oauth_refresh.OPENAI_CODEX_PROVIDER,
+            refresh_token="refresh-1",
+        )
         refresh_module = SimpleNamespace(
             OAuthRefreshError=DummyOAuthRefreshError,
-            collect_refreshable_entries=lambda entries: [],
-            refresh_saved_entries=lambda entries: (_ for _ in ()).throw(DummyOAuthRefreshError("refresh failed")),
+            collect_refreshable_entries=lambda entries: [
+                SimpleNamespace(
+                    provider=oauth_refresh.OPENAI_CODEX_PROVIDER,
+                    bundle=oauth_refresh.TokenBundle(
+                        access_token="old-access",
+                        refresh_token="refresh-1",
+                        expires=1_000,
+                    ),
+                )
+            ],
+            refresh_saved_entries=lambda entries: (_ for _ in ()).throw(terminal_exc),
             current_time_iso=lambda: "2026-05-15T12:00:00Z",
+            saved_account_records=oauth_refresh.saved_account_records,
+            auto_refresh_disabled_group_keys=oauth_refresh.auto_refresh_disabled_group_keys,
+            set_auto_refresh_disabled_group_keys=oauth_refresh.set_auto_refresh_disabled_group_keys,
+            apply_auto_refresh_disabled_group_updates=oauth_refresh.apply_auto_refresh_disabled_group_updates,
         )
 
         with self.assertRaisesRegex(UserFacingError, "Token renewal failed for 'alice': refresh failed"):
             account_services.refresh_saved_account(
                 "alice",
                 operation_lock=contextlib.nullcontext(),
-                load_saved_account_data=lambda name: ("account.json", {"entries": []}, "ide"),
+                load_saved_account_data=lambda name: (
+                    "account.json",
+                    {
+                        "entries": [
+                            {
+                                "key": oauth_refresh.KILO_NEW_KEY,
+                                "value": {
+                                    "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                    "access_token": "old-access",
+                                    "refresh_token": "refresh-1",
+                                    "expires": 1_000,
+                                },
+                            }
+                        ]
+                    },
+                    "ide",
+                ),
+                list_saved_accounts=lambda: [
+                    {
+                        "name": "alice",
+                        "path": "account.json",
+                        "kind": "ide",
+                        "data": {
+                            "entries": [
+                                {
+                                    "key": oauth_refresh.KILO_NEW_KEY,
+                                    "value": {
+                                        "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                        "access_token": "old-access",
+                                        "refresh_token": "refresh-1",
+                                        "expires": 1_000,
+                                    },
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "name": "bob",
+                        "path": "bob.json",
+                        "kind": "codex",
+                        "data": {
+                            "entries": [
+                                {
+                                    "key": oauth_refresh.CODEX_KEY,
+                                    "value": {
+                                        "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                        "access_token": "old-access-b",
+                                        "refresh_token": "refresh-1",
+                                        "expires": 2_000,
+                                    },
+                                }
+                            ]
+                        },
+                    },
+                ],
                 oauth_refresh_module=refresh_module,
                 is_terminal_refresh_error=lambda exc: True,
                 write_saved_account_batch=lambda updates: write_calls.extend(list(updates.items())),
@@ -172,14 +244,158 @@ class AccountServicesModuleTests(TempDirTestCase):
                 (
                     "account.json",
                     {
-                        "entries": [],
+                        "entries": [
+                            {
+                                "key": oauth_refresh.KILO_NEW_KEY,
+                                "value": {
+                                    "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                    "access_token": "old-access",
+                                    "refresh_token": "refresh-1",
+                                    "expires": 1_000,
+                                },
+                            }
+                        ],
+                        "auto_refresh_disabled_groups": [
+                            {
+                                "provider": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                "refresh_token": "refresh-1",
+                            }
+                        ],
                         "refresh_status": oauth_refresh.REFRESH_STATUS_TERMINAL_ERROR,
                         "refresh_error": "refresh failed",
                         "refresh_error_at": "2026-05-15T12:00:00Z",
                     },
+                ),
+                (
+                    "bob.json",
+                    {
+                        "entries": [
+                            {
+                                "key": oauth_refresh.CODEX_KEY,
+                                "value": {
+                                    "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                    "access_token": "old-access-b",
+                                    "refresh_token": "refresh-1",
+                                    "expires": 2_000,
+                                },
+                            }
+                        ],
+                        "auto_refresh_disabled_groups": [
+                            {
+                                "provider": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                "refresh_token": "refresh-1",
+                            }
+                        ],
+                    },
                 )
             ],
         )
+
+    def test_refresh_saved_account_success_clears_auto_refresh_disabled_groups(self):
+        persisted_calls: list[dict[str, dict]] = []
+        refresh_module = SimpleNamespace(
+            OAuthRefreshError=RuntimeError,
+            AUTO_REFRESH_DISABLED_GROUPS_KEY="auto_refresh_disabled_groups",
+            collect_refreshable_entries=lambda entries: [SimpleNamespace(provider=oauth_refresh.OPENAI_CODEX_PROVIDER)],
+            refresh_saved_entries=lambda entries: SimpleNamespace(
+                entries=[
+                    {
+                        "key": oauth_refresh.KILO_NEW_KEY,
+                        "value": {
+                            "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                            "refresh_token": "refresh-1",
+                            "access_token": "new-access",
+                        },
+                    }
+                ],
+                refreshed_at="2026-05-15T12:00:00Z",
+                refreshed_groups=1,
+                refreshed_entries=1,
+            ),
+            current_time_iso=lambda: "2026-05-15T12:00:00Z",
+            group_keys_from_entries=oauth_refresh.group_keys_from_entries,
+            saved_account_records=oauth_refresh.saved_account_records,
+            apply_auto_refresh_disabled_group_updates=oauth_refresh.apply_auto_refresh_disabled_group_updates,
+        )
+
+        message = account_services.refresh_saved_account(
+            "alice",
+            operation_lock=contextlib.nullcontext(),
+            load_saved_account_data=lambda name: (
+                "alice.json",
+                {
+                    "entries": [
+                        {
+                            "key": oauth_refresh.KILO_NEW_KEY,
+                            "value": {
+                                "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                "refresh_token": "refresh-1",
+                                "access_token": "old-access",
+                            },
+                        }
+                    ],
+                    "auto_refresh_disabled_groups": [
+                        {"provider": oauth_refresh.OPENAI_CODEX_PROVIDER, "refresh_token": "refresh-1"}
+                    ],
+                },
+                "ide",
+            ),
+            list_saved_accounts=lambda: [
+                {
+                    "name": "alice",
+                    "path": "alice.json",
+                    "kind": "ide",
+                    "data": {
+                        "entries": [
+                            {
+                                "key": oauth_refresh.KILO_NEW_KEY,
+                                "value": {
+                                    "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                    "refresh_token": "refresh-1",
+                                    "access_token": "old-access",
+                                },
+                            }
+                        ],
+                        "auto_refresh_disabled_groups": [
+                            {"provider": oauth_refresh.OPENAI_CODEX_PROVIDER, "refresh_token": "refresh-1"}
+                        ],
+                    },
+                },
+                {
+                    "name": "bob",
+                    "path": "bob.json",
+                    "kind": "codex",
+                    "data": {
+                        "entries": [
+                            {
+                                "key": oauth_refresh.CODEX_KEY,
+                                "value": {
+                                    "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
+                                    "refresh_token": "refresh-1",
+                                    "access_token": "other-access",
+                                    "expires": 2_000,
+                                },
+                            }
+                        ],
+                        "auto_refresh_disabled_groups": [
+                            {"provider": oauth_refresh.OPENAI_CODEX_PROVIDER, "refresh_token": "refresh-1"}
+                        ],
+                        "refresh_status": oauth_refresh.REFRESH_STATUS_TERMINAL_ERROR,
+                    },
+                },
+            ],
+            oauth_refresh_module=refresh_module,
+            is_terminal_refresh_error=lambda exc: False,
+            write_saved_account_batch=lambda updates: None,
+            persist_refreshed_saved_account_batch=lambda updates, **kwargs: persisted_calls.append(dict(updates)),
+            saved_account_refresh_error_cls=UserFacingError,
+            persistence_error_cls=RuntimeError,
+        )
+
+        self.assertEqual(message, "Renewed tokens for 'alice' (1 token group, 1 entry)")
+        self.assertEqual(len(persisted_calls), 1)
+        self.assertNotIn("auto_refresh_disabled_groups", persisted_calls[0]["alice.json"])
+        self.assertNotIn("auto_refresh_disabled_groups", persisted_calls[0]["bob.json"])
 
     def test_use_ide_account_validates_kind_and_handles_running_kilo_new(self):
         base_kwargs = {

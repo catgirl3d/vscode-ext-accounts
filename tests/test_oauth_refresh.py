@@ -267,6 +267,27 @@ class OAuthRefreshTests(unittest.TestCase):
         self.assertEqual(grouped[0].expires, 0)
         self.assertEqual(refresh.refresh_due_at_ms(grouped[0], 600), 0)
 
+        filtered = refresh.collect_refresh_groups(
+            [
+                refresh.SavedAccountRecord(
+                    name="alice",
+                    path="alice.json",
+                    data={
+                        "entries": [
+                            {"key": secret_key("kilocode.kilo-code"), "value": {"refresh_token": "shared", "expires": 1200}},
+                            {"key": refresh.KILO_NEW_KEY, "value": {"type": refresh.OPENAI_CODEX_PROVIDER, "refresh_token": "other", "expires": 2400}},
+                        ],
+                        "auto_refresh_disabled_groups": [
+                            {"provider": refresh.OPENAI_CODEX_PROVIDER, "refresh_token": "shared"}
+                        ],
+                    },
+                )
+            ],
+            skip_disabled_auto_refresh_groups=True,
+        )
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0].key.refresh_token, "other")
+
     def test_apply_refresh_helpers_validate_record_layout_and_missing_refreshers(self):
         bundle = refresh.TokenBundle(
             access_token="new-access",
@@ -295,7 +316,20 @@ class OAuthRefreshTests(unittest.TestCase):
         )
 
         updated = refresh.apply_refreshed_group(
-            {"alice.json": record},
+            {
+                "alice.json": refresh.SavedAccountRecord(
+                    name="alice",
+                    path="alice.json",
+                    data={
+                        "entries": [{"key": secret_key("kilocode.kilo-code"), "value": {"refresh_token": "old-refresh"}}],
+                        "refresh_error": "old error",
+                        "refresh_error_at": "yesterday",
+                        "auto_refresh_disabled_groups": [
+                            {"provider": refresh.OPENAI_CODEX_PROVIDER, "refresh_token": "refresh-1"}
+                        ],
+                    },
+                )
+            },
             group,
             bundle,
             refreshed_at="2024-01-02T03:04:05Z",
@@ -303,6 +337,7 @@ class OAuthRefreshTests(unittest.TestCase):
         self.assertEqual(updated["alice.json"]["refresh_status"], refresh.REFRESH_STATUS_OK)
         self.assertEqual(updated["alice.json"]["last_refreshed_at"], "2024-01-02T03:04:05Z")
         self.assertNotIn("refresh_error", updated["alice.json"])
+        self.assertNotIn(refresh.AUTO_REFRESH_DISABLED_GROUPS_KEY, updated["alice.json"])
         self.assertEqual(updated["alice.json"]["entries"][0]["value"]["access_token"], "new-access")
 
         errored = refresh.apply_refresh_error(
@@ -311,10 +346,15 @@ class OAuthRefreshTests(unittest.TestCase):
             status=refresh.REFRESH_STATUS_TERMINAL_ERROR,
             error_message="invalid_grant",
             error_at="2024-01-02T03:04:05Z",
+            disable_auto_refresh_group=True,
         )
         self.assertEqual(errored["alice.json"]["refresh_status"], refresh.REFRESH_STATUS_TERMINAL_ERROR)
         self.assertEqual(errored["alice.json"]["refresh_error"], "invalid_grant")
         self.assertEqual(errored["alice.json"]["refresh_error_at"], "2024-01-02T03:04:05Z")
+        self.assertEqual(
+            errored["alice.json"][refresh.AUTO_REFRESH_DISABLED_GROUPS_KEY],
+            [{"provider": refresh.OPENAI_CODEX_PROVIDER, "refresh_token": "refresh-1"}],
+        )
 
         with self.assertRaisesRegex(refresh.OAuthRefreshError, "Missing saved account record"):
             refresh.apply_refreshed_group({}, group, bundle)
