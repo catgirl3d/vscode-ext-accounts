@@ -10,7 +10,7 @@ from . import saved_account_status
 
 @dataclass(frozen=True)
 class RefreshPolicy:
-    refresh_before_ms: int = 10 * 60 * 1000
+    refresh_before_ms: int = 2 * 24 * 60 * 60 * 1000
     scan_interval_ms: int = 60 * 1000
     min_delay_ms: int = 5 * 1000
     initial_retry_ms: int = 30 * 1000

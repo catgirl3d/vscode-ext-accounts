@@ -28,7 +28,7 @@ def secret_key(extension_id: str) -> str:
 
 class RefreshSchedulerTests(unittest.TestCase):
     def test_run_once_refreshes_due_group_once_across_multiple_saved_accounts(self):
-        now_ms = 1_000
+        now_ms = 1_778_857_200_000
         raw_records = [
             {
                 "name": "alice",
@@ -82,7 +82,7 @@ class RefreshSchedulerTests(unittest.TestCase):
                 oauth_refresh.OPENAI_CODEX_PROVIDER: lambda bundle: oauth_refresh.TokenBundle(
                     access_token="new-access",
                     refresh_token="rotated-refresh",
-                    expires=now_ms + 3_600_000,
+                    expires=now_ms + 7 * 24 * 60 * 60 * 1000,
                     account_id="acct-new",
                     id_token="new-id",
                 )
@@ -118,7 +118,7 @@ class RefreshSchedulerTests(unittest.TestCase):
                                 "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
                                 "access_token": "new-access",
                                 "refresh_token": "rotated-refresh",
-                                "expires": now_ms + 3_600_000,
+                                "expires": now_ms + 7 * 24 * 60 * 60 * 1000,
                                 "accountId": "acct-new",
                                 "id_token": "new-id",
                             },
@@ -135,7 +135,7 @@ class RefreshSchedulerTests(unittest.TestCase):
                                 "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
                                 "access_token": "new-access",
                                 "refresh_token": "rotated-refresh",
-                                "expires": now_ms + 3_600_000,
+                                "expires": now_ms + 7 * 24 * 60 * 60 * 1000,
                                 "accountId": "acct-new",
                                 "id_token": "new-id",
                             },
@@ -411,7 +411,7 @@ class RefreshSchedulerTests(unittest.TestCase):
                                 "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
                                 "access_token": "access",
                                 "refresh_token": "refresh-future",
-                                "expires": now_ms + 24 * 60 * 60 * 1000,
+                                "expires": now_ms + 3 * 24 * 60 * 60 * 1000,
                                 "accountId": "acct-future",
                             },
                         }
@@ -487,7 +487,7 @@ class RefreshSchedulerTests(unittest.TestCase):
             return oauth_refresh.TokenBundle(
                 access_token="new-current-access",
                 refresh_token="refresh-current-rotated",
-                expires=now_ms + 3_600_000,
+                expires=now_ms + 7 * 24 * 60 * 60 * 1000,
                 account_id="acct-current",
                 id_token=None,
             )
@@ -519,7 +519,7 @@ class RefreshSchedulerTests(unittest.TestCase):
                                     "type": oauth_refresh.OPENAI_CODEX_PROVIDER,
                                     "access_token": "new-current-access",
                                     "refresh_token": "refresh-current-rotated",
-                                    "expires": now_ms + 3_600_000,
+                                    "expires": now_ms + 7 * 24 * 60 * 60 * 1000,
                                     "accountId": "acct-current",
                                 },
                             }
