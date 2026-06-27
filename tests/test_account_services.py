@@ -74,6 +74,18 @@ class AccountServicesModuleTests(TempDirTestCase):
             ],
         )
 
+    def test_first_expires_ms_uses_shared_filtering_rules(self):
+        entries = [
+            {"key": "skip-me", "value": {"expires": 1_000}},
+            {"key": "keep-a", "value": {"expires": 5_000}},
+            {"key": "keep-b", "value": {"expires": 2_000}},
+            {"key": "bad", "value": {"expires": "later"}},
+        ]
+
+        self.assertEqual(account_services.first_expires_ms(entries), 1_000)
+        self.assertEqual(account_services.first_expires_ms(entries, skip_keys=("skip-me",)), 2_000)
+        self.assertEqual(account_services.first_expires_ms([{"key": "bad", "value": {}}]), 0)
+
     def test_save_ide_and_codex_account_raise_user_facing_errors_for_missing_data(self):
         with self.assertRaisesRegex(UserFacingError, "No matching account entries found"):
             account_services.save_ide_account(
@@ -419,6 +431,96 @@ class AccountServicesModuleTests(TempDirTestCase):
                     "expires": 123,
                 },
                 write_account_file=lambda *args: "unused.json",
+                user_facing_error_cls=UserFacingError,
+            )
+
+    def test_import_ide_account_data_writes_selected_ide_entries(self):
+        write_calls: list[tuple[str, str, str, list[dict]]] = []
+
+        result = account_services.import_ide_account_data(
+            [
+                {
+                    "access_token": "access-1",
+                    "refresh_token": "refresh-1",
+                    "account_id": "acct-1",
+                    "id_token": "id-1",
+                    "expires": 123,
+                }
+            ],
+            "alice",
+            ["kilocode", "kilo-new"],
+            ide_extensions={"kilocode": "kilocode.kilo-code", "kilo-new": self.kilo_new_key},
+            kilo_new_key=self.kilo_new_key,
+            from_codex_format=lambda value: {
+                "access_token": value["access_token"],
+                "refresh_token": value["refresh_token"],
+                "accountId": value["account_id"],
+                "id_token": value["id_token"],
+                "expires": value["expires"],
+            },
+            write_account_file=lambda name, kind, ext_label, entries: write_calls.append((name, kind, ext_label, entries)) or "alice.json",
+            entry_key_for_ext_fn=lambda ext_id: f"secret://{ext_id}",
+            user_facing_error_cls=UserFacingError,
+        )
+
+        self.assertEqual(result.path, "alice.json")
+        self.assertEqual(result.ext_label, "kilocode+kilo-new")
+        self.assertEqual(
+            result.entries,
+            [
+                {
+                    "key": "secret://kilocode.kilo-code",
+                    "value": {
+                        "access_token": "access-1",
+                        "refresh_token": "refresh-1",
+                        "accountId": "acct-1",
+                        "id_token": "id-1",
+                        "expires": 123,
+                    },
+                },
+                {
+                    "key": self.kilo_new_key,
+                    "value": {
+                        "access_token": "access-1",
+                        "refresh_token": "refresh-1",
+                        "accountId": "acct-1",
+                        "id_token": "id-1",
+                        "expires": 123,
+                    },
+                },
+            ],
+        )
+        self.assertEqual(write_calls, [("alice", "ide", "kilocode+kilo-new", result.entries)])
+
+    def test_import_ide_account_data_validates_array_and_id_token_requirements(self):
+        with self.assertRaisesRegex(UserFacingError, "Empty JSON array provided"):
+            account_services.import_ide_account_data(
+                [],
+                "alice",
+                ["kilocode"],
+                ide_extensions={"kilocode": "kilocode.kilo-code"},
+                kilo_new_key=self.kilo_new_key,
+                from_codex_format=lambda value: value,
+                write_account_file=lambda *args: "unused.json",
+                entry_key_for_ext_fn=lambda ext_id: ext_id,
+                user_facing_error_cls=UserFacingError,
+            )
+
+        with self.assertRaisesRegex(UserFacingError, "requires id_token"):
+            account_services.import_ide_account_data(
+                {
+                    "access_token": "access-1",
+                    "refresh_token": "refresh-1",
+                    "accountId": "acct-1",
+                    "expires": 123,
+                },
+                "alice",
+                ["kilocode"],
+                ide_extensions={"kilocode": "kilocode.kilo-code"},
+                kilo_new_key=self.kilo_new_key,
+                from_codex_format=lambda value: value,
+                write_account_file=lambda *args: "unused.json",
+                entry_key_for_ext_fn=lambda ext_id: ext_id,
                 user_facing_error_cls=UserFacingError,
             )
 

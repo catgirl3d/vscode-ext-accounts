@@ -718,6 +718,28 @@ def import_codex_account(auth_path: str, name: str):
     print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
 
 
+def import_ide_account_from_json_string(json_str: str, name: str, exts: list[str]):
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        raise UserFacingError(f"ERROR: invalid JSON: {exc}") from exc
+
+    result = account_services.import_ide_account_data(
+        data,
+        name,
+        exts,
+        ide_extensions=IDE_EXTENSIONS,
+        kilo_new_key=KILO_NEW_KEY,
+        from_codex_format=_from_codex_format,
+        write_account_file=_write_account_file,
+        entry_key_for_ext_fn=_entry_key_for_ext,
+        user_facing_error_cls=UserFacingError,
+    )
+    exp_dt = datetime.datetime.fromtimestamp(account_services.first_expires_ms(result.entries) / 1000)
+    print(f"Imported IDE account '{name}' [{result.ext_label}] -> {result.path}")
+    print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
+
+
 def main():
     raise SystemExit("CLI support removed. Use `python main.py`.")
 

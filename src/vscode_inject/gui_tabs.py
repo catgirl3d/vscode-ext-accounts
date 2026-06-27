@@ -4,8 +4,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
+from . import account_services
 from . import saved_account_status
 
 
@@ -19,6 +20,21 @@ REFRESH_ERROR_ROW_TAG = "refresh_error"
 REFRESH_ERROR_ROW_FG = "#fab387"
 TERMINAL_REFRESH_ERROR_ROW_TAG = "terminal_refresh_error"
 TERMINAL_REFRESH_ERROR_ROW_FG = "#f38ba8"
+IDE_ACCOUNT_IMPORT_HINT = (
+    "Paste a JSON object or a one-item JSON array. Required fields: "
+    "access_token, refresh_token, id_token. Optional: account_id and expires."
+)
+IDE_ACCOUNT_IMPORT_EXAMPLE = (
+    "[\n"
+    "  {\n"
+    '    "access_token": "eyJ...",\n'
+    '    "refresh_token": "rt.1....",\n'
+    '    "id_token": "eyJ...",\n'
+    '    "account_id": "acct-123",\n'
+    '    "expires": 1767225600000\n'
+    "  }\n"
+    "]"
+)
 
 
 def current_time_ms():
@@ -115,17 +131,7 @@ def first_expires(entries, skip_keys=None):
 
 
 def first_expires_ms(entries, skip_keys=None):
-    skip_keys = set(skip_keys or [])
-    expires_values = []
-    for entry in entries:
-        if entry.get("key") in skip_keys:
-            continue
-        value = entry.get("value", {})
-        if isinstance(value, dict):
-            expires_ms = value.get("expires")
-            if isinstance(expires_ms, int) and expires_ms > 0:
-                expires_values.append(expires_ms)
-    return min(expires_values, default=0)
+    return account_services.first_expires_ms(entries, skip_keys=skip_keys)
 
 
 def selected_name(tree, empty_message):
@@ -142,6 +148,166 @@ def ask_account_name(root, title, prompt, initialvalue=None):
         return None
     normalized = name.strip()
     return normalized or None
+
+
+def clipboard_text_or_empty(root: tk.Tk) -> str:
+    try:
+        value = root.clipboard_get()
+    except tk.TclError:
+        return ""
+    return value if isinstance(value, str) else str(value)
+
+
+class IdeAccountImportDialog:
+    def __init__(self, services: GuiServices):
+        self.services = services
+        self.result: tuple[str, str] | None = None
+        self.window = tk.Toplevel(services.root)
+        self.window.title("Import IDE Account")
+        self.window.transient(services.root)
+        self.window.configure(bg=services.bg)
+        self.window.resizable(True, True)
+        self.window.minsize(720, 560)
+        self.window.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.window.bind("<Escape>", self.cancel)
+
+        content = tk.Frame(self.window, bg=services.bg, padx=12, pady=12)
+        content.pack(fill="both", expand=True)
+
+        tk.Label(content, text="Account name:", bg=services.bg, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        self.name_entry = tk.Entry(
+            content,
+            bg=services.btn_bg,
+            fg=services.fg,
+            insertbackground=services.fg,
+            relief="flat",
+            font=("Segoe UI", 10),
+        )
+        self.name_entry.pack(fill="x", pady=(4, 10))
+
+        tk.Label(content, text="Expected format:", bg=services.bg, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        tk.Label(
+            content,
+            text=IDE_ACCOUNT_IMPORT_HINT,
+            bg=services.bg,
+            fg=services.fg,
+            justify="left",
+            wraplength=680,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(4, 8))
+
+        self.example_text = tk.Text(
+            content,
+            height=8,
+            bg=services.btn_bg,
+            fg=services.fg,
+            insertbackground=services.fg,
+            relief="flat",
+            wrap="none",
+            font=("Consolas", 9),
+        )
+        self.example_text.insert("1.0", IDE_ACCOUNT_IMPORT_EXAMPLE)
+        self.example_text.configure(state="disabled")
+        self.example_text.pack(fill="x", pady=(0, 10))
+
+        payload_header = tk.Frame(content, bg=services.bg)
+        payload_header.pack(fill="x")
+        tk.Label(payload_header, text="Paste JSON:", bg=services.bg, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(side="left")
+        tk.Button(
+            payload_header,
+            text="Paste",
+            command=self.paste_from_clipboard,
+            bg=services.btn_bg,
+            fg=services.fg,
+            activebackground=services.btn_act,
+            activeforeground=services.fg,
+            relief="flat",
+            padx=10,
+            pady=4,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+        ).pack(side="right")
+        self.payload_text = scrolledtext.ScrolledText(
+            content,
+            height=14,
+            bg=services.btn_bg,
+            fg=services.fg,
+            insertbackground=services.fg,
+            relief="flat",
+            wrap="word",
+            font=("Consolas", 10),
+        )
+        self.payload_text.pack(fill="both", expand=True, pady=(4, 10))
+
+        button_row = tk.Frame(content, bg=services.bg)
+        button_row.pack(fill="x")
+        tk.Button(
+            button_row,
+            text="Import",
+            command=self.submit,
+            bg="#89b4fa",
+            fg=services.sel_fg,
+            activebackground=services.btn_act,
+            activeforeground=services.fg,
+            relief="flat",
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 10),
+            cursor="hand2",
+        ).pack(side="right", padx=(8, 0))
+        tk.Button(
+            button_row,
+            text="Cancel",
+            command=self.cancel,
+            bg=services.btn_bg,
+            fg=services.fg,
+            activebackground=services.btn_act,
+            activeforeground=services.fg,
+            relief="flat",
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 10),
+            cursor="hand2",
+        ).pack(side="right")
+
+        self.name_entry.focus_set()
+
+    def show(self) -> tuple[str, str] | None:
+        self.window.grab_set()
+        self.window.wait_window()
+        return self.result
+
+    def paste_from_clipboard(self):
+        payload = clipboard_text_or_empty(self.services.root)
+        if not payload:
+            messagebox.showwarning("Import IDE Account", "Clipboard does not contain text.")
+            self.payload_text.focus_set()
+            return
+        self.payload_text.delete("1.0", "end")
+        self.payload_text.insert("1.0", payload)
+        self.payload_text.focus_set()
+
+    def submit(self, _event=None):
+        name = self.name_entry.get().strip()
+        payload = self.payload_text.get("1.0", "end-1c").strip()
+        if not name:
+            messagebox.showwarning("Import IDE Account", "Enter an account name.")
+            self.name_entry.focus_set()
+            return
+        if not payload:
+            messagebox.showwarning("Import IDE Account", "Paste the account JSON to import.")
+            self.payload_text.focus_set()
+            return
+        self.result = (name, payload)
+        self.window.destroy()
+
+    def cancel(self, _event=None):
+        self.result = None
+        self.window.destroy()
+
+
+def ask_ide_account_import(services: GuiServices) -> tuple[str, str] | None:
+    return IdeAccountImportDialog(services).show()
 
 
 def delete_saved_account(db_module, name):
@@ -312,6 +478,7 @@ class IdeAccountsTab:
         self.btn_frame = tk.Frame(self.frame, bg=bg)
         self.btn_frame.pack(padx=10, pady=(0, 6))
         tab_button(self.btn_frame, self.services, "💾 Save current", self.on_save, accent=True)
+        tab_button(self.btn_frame, self.services, "📥 Paste account", self.on_import_clipboard)
         tab_button(self.btn_frame, self.services, "▶ Use selected", self.on_use)
         tab_button(self.btn_frame, self.services, "↻ Refresh selected", self.on_refresh_selected)
         tab_button(self.btn_frame, self.services, "✏ Rename", self.on_rename)
@@ -498,6 +665,25 @@ class IdeAccountsTab:
             return
         label = self.format_ext_selection(exts)
         self.services.run_guarded(self.services.db.save_ide_account, name, exts, success_msg=f"Saved '{name}' [{label}]")
+
+    def on_import_clipboard(self):
+        exts = self.selected_exts()
+        if not exts:
+            return
+
+        import_data = ask_ide_account_import(self.services)
+        if not import_data:
+            return
+        name, json_text = import_data
+
+        label = self.format_ext_selection(exts)
+        self.services.run_guarded(
+            self.services.db.import_ide_account_from_json_string,
+            json_text,
+            name,
+            exts,
+            success_msg=f"Imported '{name}' [{label}]",
+        )
 
     def on_use(self):
         name = selected_name(self.tree, "Select an IDE account first.")

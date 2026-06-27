@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass
-from typing import Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from . import saved_account_status
 
@@ -426,3 +426,72 @@ def print_saved_entries(entries: Sequence[dict], *, print_fn: Callable[[str], No
             if exp:
                 exp_dt = datetime.datetime.fromtimestamp(exp / 1000)
                 print_fn(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
+
+
+def first_expires_ms(entries: Sequence[dict], *, skip_keys: Sequence[str] | None = None) -> int:
+    skip_key_set = set(skip_keys or [])
+    expires_values = []
+    for entry in entries:
+        if entry.get("key") in skip_key_set:
+            continue
+        value = entry.get("value", {})
+        if isinstance(value, dict):
+            expires_ms = value.get("expires")
+            if isinstance(expires_ms, int) and expires_ms > 0:
+                expires_values.append(expires_ms)
+    return min(expires_values, default=0)
+
+
+def import_ide_account_data(
+    data: Any,
+    name: str,
+    exts: list[str],
+    *,
+    ide_extensions: Mapping[str, str | None],
+    kilo_new_key: str,
+    from_codex_format,
+    write_account_file,
+    entry_key_for_ext_fn,
+    user_facing_error_cls,
+) -> SavedAccountWriteResult:
+    if isinstance(data, list):
+        if not data:
+            raise user_facing_error_cls("ERROR: Empty JSON array provided")
+        data = data[0]
+
+    if not isinstance(data, dict):
+        raise user_facing_error_cls("ERROR: JSON must be an object or an array of objects")
+
+    value = from_codex_format(data)
+    access_token = value.get("access_token")
+    refresh_token = value.get("refresh_token")
+    expires_ms = value.get("expires", 0)
+
+    if not access_token or not refresh_token:
+        raise user_facing_error_cls("ERROR: access_token or refresh_token missing in data")
+    if not expires_ms:
+        raise user_facing_error_cls("ERROR: could not decode access token expiry from data")
+    if not value.get("id_token"):
+        raise user_facing_error_cls("ERROR: Codex data requires id_token.")
+
+    entries = []
+    for ext_name in exts:
+        ext_id = ide_extensions.get(ext_name)
+        if ext_id is None:
+            continue
+        if ext_id == kilo_new_key:
+            entries.append({"key": kilo_new_key, "value": value})
+        else:
+            key = entry_key_for_ext_fn(ext_id)
+            entries.append({"key": key, "value": value})
+
+    if not entries:
+        raise user_facing_error_cls("ERROR: No extensions selected to import the account for.")
+
+    ext_label = "+".join(exts)
+    try:
+        out = write_account_file(name, "ide", ext_label, entries)
+    except ValueError as exc:
+        raise user_facing_error_cls(str(exc)) from exc
+
+    return SavedAccountWriteResult(path=out, ext_label=ext_label, entries=entries)

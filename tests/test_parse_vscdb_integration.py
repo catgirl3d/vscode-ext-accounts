@@ -877,6 +877,62 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
         self.assertEqual(entry["value"]["id_token"], "id-import")
         self.assertEqual(entry["value"]["expires"], 1720000000000)
 
+    def test_import_ide_account_from_json_string_imports_selected_extensions(self):
+        accounts_dir = self.root / "accounts"
+        self.patch_db("ACCOUNTS_DIR", str(accounts_dir))
+
+        output = self.capture_output(
+            db.import_ide_account_from_json_string,
+            json.dumps(
+                [
+                    {
+                        "access_token": "access-import",
+                        "refresh_token": "refresh-import",
+                        "account_id": "acct-import-ide",
+                        "id_token": "id-import-ide",
+                        "expires": 1720000000000,
+                    }
+                ]
+            ),
+            "imported_ide",
+            ["kilocode", "kilo-new"],
+        )
+
+        self.assertIn("Imported IDE account 'imported_ide' [kilocode+kilo-new]", output)
+        self.assertIn("expires:", output)
+
+        saved_path = accounts_dir / "imported_ide.json"
+        saved_data = json.loads(saved_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved_data["kind"], "ide")
+        self.assertEqual(saved_data["ext"], "kilocode+kilo-new")
+        self.assertEqual(
+            saved_data["entries"],
+            [
+                {
+                    "key": oauth_key("kilocode.kilo-code"),
+                    "value": {
+                        "type": "openai-codex",
+                        "access_token": "access-import",
+                        "refresh_token": "refresh-import",
+                        "expires": 1720000000000,
+                        "accountId": "acct-import-ide",
+                        "id_token": "id-import-ide",
+                    },
+                },
+                {
+                    "key": db.KILO_NEW_KEY,
+                    "value": {
+                        "type": "openai-codex",
+                        "access_token": "access-import",
+                        "refresh_token": "refresh-import",
+                        "expires": 1720000000000,
+                        "accountId": "acct-import-ide",
+                        "id_token": "id-import-ide",
+                    },
+                },
+            ],
+        )
+
     def test_refresh_saved_account_performs_oauth_refresher_flow_and_saves_batch(self):
         accounts_dir = self.root / "accounts"
         account_data = {

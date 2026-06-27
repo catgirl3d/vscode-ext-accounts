@@ -273,6 +273,10 @@ class ParseVscdbTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown extension"):
             db._normalize_ide_ext_selection("unknown-ext")
 
+    def test_import_ide_account_from_json_string_rejects_invalid_json(self):
+        with self.assertRaisesRegex(db.UserFacingError, "invalid JSON"):
+            db.import_ide_account_from_json_string("{not-json", "alice", ["kilocode"])
+
 
 if __name__ == "__main__":
     unittest.main()

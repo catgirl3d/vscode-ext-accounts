@@ -88,6 +88,13 @@ class GuiTabsHelperTests(unittest.TestCase):
         with patch("vscode_inject.gui_tabs.simpledialog.askstring", return_value="alice account"):
             self.assertEqual(gui_tabs.ask_account_name(Mock(), "Save", "Name"), "alice account")
 
+        clipboard_root = Mock()
+        clipboard_root.clipboard_get.return_value = '{"access_token":"a"}'
+        self.assertEqual(gui_tabs.clipboard_text_or_empty(clipboard_root), '{"access_token":"a"}')
+
+        clipboard_root.clipboard_get.side_effect = tk.TclError()
+        self.assertEqual(gui_tabs.clipboard_text_or_empty(clipboard_root), "")
+
         delete_saved_account = Mock()
         db_module = SimpleNamespace(delete_saved_account=delete_saved_account)
         with patch("vscode_inject.gui_tabs.os.remove") as remove:
@@ -116,6 +123,7 @@ class IdeAccountsTabTests(unittest.TestCase):
             "kilo-new": "kilo-new://openai",
         }
         save_ide_account = Mock(name="save_ide_account")
+        import_ide_account_from_json_string = Mock(name="import_ide_account_from_json_string")
         use_ide_account = Mock(name="use_ide_account")
         refresh_saved_account = Mock(name="refresh_saved_account")
         rename_saved_account = Mock(name="rename_saved_account")
@@ -138,6 +146,7 @@ class IdeAccountsTabTests(unittest.TestCase):
             is_ide_running=lambda ide=None: running_state[ide or "vscode"],
             set_ide=lambda name: None,
             save_ide_account=save_ide_account,
+            import_ide_account_from_json_string=import_ide_account_from_json_string,
             use_ide_account=use_ide_account,
             refresh_saved_account=refresh_saved_account,
             rename_saved_account=rename_saved_account,
@@ -475,6 +484,92 @@ class IdeAccountsTabTests(unittest.TestCase):
             ["kilocode", "roo-cline"],
             success_msg="Saved 'alice' [kilocode+roo-cline]",
         )
+
+    def test_on_import_clipboard_handles_clipboard_errors_and_success_path(self):
+        db_module = self.make_db(running=False)
+        services = self.make_services(db_module)
+        services.run_guarded = Mock()
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, services)
+
+        with patch.object(tab, "selected_exts", return_value=[]), patch("vscode_inject.gui_tabs.ask_ide_account_import") as ask_import:
+            tab.on_import_clipboard()
+
+        ask_import.assert_not_called()
+        services.run_guarded.assert_not_called()
+
+        services.run_guarded.reset_mock()
+        with patch.object(tab, "selected_exts", return_value=["kilocode", "kilo-new"]), patch(
+            "vscode_inject.gui_tabs.ask_ide_account_import", return_value=None
+        ):
+            tab.on_import_clipboard()
+
+        services.run_guarded.assert_not_called()
+
+        with patch.object(tab, "selected_exts", return_value=["kilocode", "kilo-new"]), patch(
+            "vscode_inject.gui_tabs.ask_ide_account_import", return_value=("alice", '[{"access_token":"a"}]')
+        ):
+            tab.on_import_clipboard()
+
+        services.run_guarded.assert_called_once_with(
+            db_module.import_ide_account_from_json_string,
+            '[{"access_token":"a"}]',
+            "alice",
+            ["kilocode", "kilo-new"],
+            success_msg="Imported 'alice' [kilocode+kilo-new]",
+        )
+
+    def test_ide_account_import_dialog_starts_empty_and_returns_submit_result(self):
+        services = self.make_services(self.make_db(running=False))
+        dialog = gui_tabs.IdeAccountImportDialog(services)
+        self.addCleanup(lambda: dialog.window.winfo_exists() and dialog.window.destroy())
+
+        self.assertIn("access_token", dialog.example_text.get("1.0", "end-1c"))
+        self.assertEqual(dialog.payload_text.get("1.0", "end-1c"), "")
+
+        dialog.name_entry.insert(0, "alice")
+        dialog.payload_text.insert("1.0", '[{"access_token":"prefill"}]')
+        dialog.submit()
+
+        self.assertEqual(dialog.result, ("alice", '[{"access_token":"prefill"}]'))
+
+    def test_ide_account_import_dialog_paste_button_replaces_payload_from_clipboard(self):
+        services = self.make_services(self.make_db(running=False))
+        dialog = gui_tabs.IdeAccountImportDialog(services)
+        self.addCleanup(lambda: dialog.window.winfo_exists() and dialog.window.destroy())
+
+        dialog.payload_text.insert("1.0", "old text")
+        with patch("vscode_inject.gui_tabs.clipboard_text_or_empty", return_value='[{"access_token":"from-clipboard"}]'):
+            dialog.paste_from_clipboard()
+
+        self.assertEqual(dialog.payload_text.get("1.0", "end-1c"), '[{"access_token":"from-clipboard"}]')
+
+    def test_ide_account_import_dialog_paste_button_warns_when_clipboard_is_empty(self):
+        services = self.make_services(self.make_db(running=False))
+        dialog = gui_tabs.IdeAccountImportDialog(services)
+        self.addCleanup(lambda: dialog.window.winfo_exists() and dialog.window.destroy())
+
+        with patch("vscode_inject.gui_tabs.clipboard_text_or_empty", return_value=""), patch(
+            "vscode_inject.gui_tabs.messagebox.showwarning"
+        ) as showwarning:
+            dialog.paste_from_clipboard()
+
+        showwarning.assert_called_once_with("Import IDE Account", "Clipboard does not contain text.")
+
+    def test_ide_account_import_dialog_validates_missing_fields(self):
+        services = self.make_services(self.make_db(running=False))
+        dialog = gui_tabs.IdeAccountImportDialog(services)
+        self.addCleanup(lambda: dialog.window.winfo_exists() and dialog.window.destroy())
+
+        with patch("vscode_inject.gui_tabs.messagebox.showwarning") as showwarning:
+            dialog.submit()
+        showwarning.assert_called_once_with("Import IDE Account", "Enter an account name.")
+
+        showwarning.reset_mock()
+        dialog.name_entry.insert(0, "alice")
+        with patch("vscode_inject.gui_tabs.messagebox.showwarning") as showwarning:
+            dialog.submit()
+        showwarning.assert_called_once_with("Import IDE Account", "Paste the account JSON to import.")
 
     def test_on_use_delete_backup_refresh_and_run_handlers_cover_branches(self):
         db_module = self.make_db(running=False)
