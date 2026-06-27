@@ -4,11 +4,12 @@
 
 ![VSCode Account Manager](1.png)
 
-A GUI utility for managing saved OpenAI (ChatGPT/Codex) accounts for VSCode/Antigravity extensions and standalone Codex.
+A Windows GUI utility for managing OpenAI OAuth sessions for Kilocode, Roo-Cline, and Kilo New, with separate support for standalone Codex.
 It reads and writes account data stored in `state.vscdb` (AES-256-GCM via Windows DPAPI), `~/.local/share/kilo/auth.json`, and `~/.codex/auth.json`.
 
 > [!IMPORTANT]
-> **Only OpenAI (auth.openai.com) is supported.** The utility is specifically built to backup, restore, and renew OpenAI OAuth credentials. Other authorization providers are not supported.
+> **Built mainly for switching saved OpenAI accounts across supported clients.**
+> Only OpenAI (`auth.openai.com`) is supported as the auth provider.
 
 
 ## Use Cases
@@ -79,19 +80,23 @@ Saved profiles in `accounts/*.json` can be refreshed independently from the live
 - If upstream returns a terminal auth error (`invalid_grant`, `already been used`, `revoked`, `sign in again`, etc.), auto-refresh is disabled for that refresh-token group until app restart.
 - Console logs use `[manual-refresh]` and `[auto-refresh]` prefixes.
 
-## Requirements
+## Run locally
+
+Requirements:
+
+- Windows
+- Python 3.10+
+- `tkinter` (normally included with the standard Windows Python build)
+- `cryptography`
+
+Run from the repository root:
 
 ```bash
-pip install cryptography
-```
-
-## GUI
-
-```bash
+python -m pip install cryptography
 python main.py
 ```
 
-![VSCode Account Manager](1.png)
+`main.py` bootstraps `src/` into `sys.path` and launches the Tk GUI.
 
 The app has two tabs: **IDE Accounts** and **Codex**.
 
@@ -143,8 +148,6 @@ The **Codex** tab provides:
 `Kilo New` always reads from and writes to `~/.local/share/kilo/auth.json`, and that file is used by Kilo New in both VSCode and Antigravity.
 
 Codex is intentionally isolated from IDE account switching. `IDE -> Codex` import/apply is not supported.
-
-`parse_vscdb.py` is now a backend module inside `src/vscode_inject/`. Launch the app with `python main.py`.
 
 ## Storage locations
 

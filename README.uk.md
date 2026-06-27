@@ -4,11 +4,12 @@
 
 ![VSCode Account Manager](1.png)
 
-GUI-утиліта для керування збереженими акаунтами OpenAI (ChatGPT/Codex) розширень VSCode/Antigravity та окремим Codex.
+Windows GUI-утиліта для керування OpenAI OAuth-сесіями для Kilocode, Roo-Cline та Kilo New, а також окремо для Codex.
 Вона читає та записує дані акаунтів, що зберігаються у `state.vscdb` (AES-256-GCM через Windows DPAPI), `~/.local/share/kilo/auth.json` та `~/.codex/auth.json`.
 
 > [!IMPORTANT]
-> **Підтримується лише OpenAI (auth.openai.com).** Утиліта розроблена спеціально для резервного копіювання, відновлення та оновлення сесій авторизації OpenAI OAuth. Інші провайдери авторизації не підтримуються.
+> **Інструмент насамперед призначений для перемикання між збереженими OpenAI-акаунтами в підтримуваних клієнтах.**
+> Як провайдер авторизації підтримується лише OpenAI (`auth.openai.com`).
 
 
 ## Сценарії використання
@@ -79,19 +80,23 @@ Codex не вважається IDE-extension-слотом. Для нього є
 - Якщо upstream повертає terminal auth error (`invalid_grant`, `already been used`, `revoked`, `sign in again` тощо), auto-refresh вимикається для цієї refresh-token-group до перезапуску застосунку.
 - Консольні логи мають префікси `[manual-refresh]` і `[auto-refresh]`.
 
-## Вимоги
+## Локальний запуск
+
+Вимоги:
+
+- Windows
+- Python 3.10+
+- `tkinter` (зазвичай входить до стандартної Windows-збірки Python)
+- `cryptography`
+
+Запускати з кореня репозиторію:
 
 ```bash
-pip install cryptography
-```
-
-## GUI
-
-```bash
+python -m pip install cryptography
 python main.py
 ```
 
-![VSCode Account Manager](1.png)
+`main.py` додає `src/` у `sys.path` і запускає Tk GUI.
 
 У застосунку є дві вкладки: **IDE Accounts** і **Codex**.
 
@@ -143,8 +148,6 @@ python main.py
 `Kilo New` завжди читається і записується через `~/.local/share/kilo/auth.json`, і цей файл використовується Kilo New як у VSCode, так і в Antigravity.
 
 Codex навмисно ізольований від IDE-перемикань. Сценарій `IDE -> Codex` не підтримується.
-
-`parse_vscdb.py` тепер є backend-модулем всередині `src/vscode_inject/`. Запускайте застосунок через `python main.py`.
 
 ## Місця зберігання
 
