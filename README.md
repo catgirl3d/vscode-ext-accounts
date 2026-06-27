@@ -16,7 +16,7 @@ You have several accounts and want to switch them in Kilocode, Roo-Cline, or Kil
 1. Sign in inside the target extension.
 2. Open **IDE Accounts** → tick the slots you want to save → **Save current**.
 3. Repeat for your other accounts.
-4. Close VSCode / Antigravity before applying.
+4. Normally close VSCode / Antigravity before applying.
 5. Select the saved account → tick the target slots → **Use selected**.
 
 **Use one login for both extensions**
@@ -24,8 +24,8 @@ You have several accounts and want to switch them in Kilocode, Roo-Cline, or Kil
 You authenticated in Roo-Cline and want the same session in Kilocode (or vice versa):
 
 1. Save the current account in **IDE Accounts**.
-2. Close the IDE
-3. Select the saved account → tick **Kilocode** and/or **Roo-Cline** → **Use selected**
+2. Close the IDE.
+3. Select the saved account → tick **Kilocode** and/or **Roo-Cline** → **Use selected**.
 
 The token is automatically remapped to the correct extension slot, even if it was originally saved under a different one.
 
@@ -35,9 +35,22 @@ Kilo New stores tokens in `~/.local/share/kilo/auth.json` — a completely separ
 That auth file is shared for Kilo New regardless of whether you use it from VSCode or Antigravity.
 The tool handles format conversion automatically:
 
-1. Save the account with any extension (e.g. **Kilocode**)
-2. Close the IDEs that may currently use Kilo New
-3. Select the saved account → tick **Kilo New** → **Use selected**
+1. Save the account with any extension (e.g. **Kilocode**).
+2. Close the IDEs that may currently use Kilo New, or explicitly confirm the experimental live-write prompt for Kilo New-only switching.
+3. Select the saved account → tick **Kilo New** → **Use selected**.
+
+**Import an IDE account from JSON**
+
+You already have a token bundle and want to save it directly for IDE targets:
+
+1. Open **IDE Accounts**.
+2. Tick the target slots.
+3. Click **Import account**.
+4. Enter the account name.
+5. Paste a JSON object or a one-item JSON array into the dialog.
+
+Required fields: `access_token`, `refresh_token`, `id_token`.
+Optional fields: `account_id`, `expires`.
 
 **Manage Codex separately**
 
@@ -53,12 +66,12 @@ Codex is not treated like an IDE extension slot. It has its own tab and its own 
 
 Saved profiles in `accounts/*.json` can be refreshed independently from the live IDE/Codex storage.
 
-- **Refresh selected** refreshes only the saved snapshot in `accounts/*.json`.
+- **Renew tokens** refreshes only the saved snapshot in `accounts/*.json`.
 - It does **not** rewrite `state.vscdb`, `~/.local/share/kilo/auth.json`, or `~/.codex/auth.json` until you explicitly apply the profile with **Use selected** / **Use selected Codex**.
 - **Auto-refresh** runs only while the app window is open.
 - Auto-refresh tracks only tokens that are still valid and will expire soon (default threshold: `10 minutes`).
 - Saved profiles that already contain expired tokens are shown as `expired` in red and are skipped by auto-refresh.
-- You can still try **Refresh selected** manually for a saved profile with expired tokens, but older refresh tokens may fail with `401` / `invalid_grant`.
+- You can still try **Renew tokens** manually for a saved profile with expired tokens, but older refresh tokens may fail with `401` / `invalid_grant`.
 - If upstream returns a terminal auth error (`invalid_grant`, `already been used`, `revoked`, `sign in again`, etc.), auto-refresh is disabled for that refresh-token group until app restart.
 - Console logs use `[manual-refresh]` and `[auto-refresh]` prefixes.
 
@@ -86,12 +99,16 @@ The **IDE Accounts** tab uses extension checkboxes to control which IDE slots ar
 - **Kilo New** — `~/.local/share/kilo/auth.json` (shared Kilo New auth, not `state.vscdb`)
 
 The **IDE Accounts** tab provides:
-- **Save current** — save the selected IDE/Kilo New account state
 - **Use selected** — apply a saved IDE account to the checked targets
-- **Refresh selected** — refresh the saved IDE snapshot in `accounts/*.json`
+- **Save current** — save the selected IDE/Kilo New account state
+- **Import account** — open a dialog and import an IDE account from pasted JSON
+- **Renew tokens** — refresh the saved IDE snapshot in `accounts/*.json`
+- **Rename** — rename a saved IDE account
 - **Delete** — remove a saved IDE account
-- **Refresh** — reload current state and saved accounts
+- **Reload** — reread current state and saved accounts without modifying tokens
 - **Full backup** — create a real ZIP snapshot of the app storages (`state.vscdb`, `Local State`, Kilo New auth, Codex auth)
+
+`Import account` expects a JSON object or a one-item array. Required fields: `access_token`, `refresh_token`, `id_token`. Optional fields: `account_id`, `expires`.
 
 The **Active** column shows where each account is currently applied: `VS` (VSCode), `AG` (Antigravity), `KN` (Kilo New).
 The **Expires** column shows `expired` in red when a saved profile already contains an expired token.
@@ -99,23 +116,25 @@ The **Expires** column shows `expired` in red when a saved profile already conta
 The **Codex** tab is separate because Codex stores its token set in `~/.codex/auth.json` and requires `id_token`.
 
 The **Codex** tab provides:
+- **Use selected Codex** — write a saved Codex account to `~/.codex/auth.json`
 - **Save current Codex** — save the current `~/.codex/auth.json`
 - **Import Codex auth** — import another Codex auth file into saved accounts
-- **Use selected Codex** — write a saved Codex account to `~/.codex/auth.json`
-- **Refresh selected** — refresh the saved Codex snapshot in `accounts/*.json`
+- **Renew tokens** — refresh the saved Codex snapshot in `accounts/*.json`
+- **Rename** — rename a saved Codex account
 - **Delete** — remove a saved Codex account
-- **Refresh** — reload current Codex state and saved accounts
+- **Reload** — reread current Codex state and saved accounts without modifying tokens
 
 ### Notes
 
 - Choose **VSCode** or **Antigravity** at the top of **IDE Accounts**.
 - Tick one or more extension checkboxes before **Save current** or **Use selected**.
-- The target IDE must stay closed while **Use selected** is applying changes.
+- The target IDE normally must stay closed while **Use selected** is applying changes.
+- If you are switching only the shared **Kilo New** auth, the GUI may offer an experimental live-write confirmation instead of forcing the IDE closed.
 - Saved accounts are stored in the local `accounts/` directory.
 - Before the app writes to IDE/Kilo New/Codex storage, it creates an automatic pre-write ZIP backup of the affected files.
 - `Full backup` warns only when required files for the current IDE are missing, reports other absent storages as skipped/optional, and fails if no target files exist at all.
 - Auto-refresh does not touch saved profiles that already contain expired tokens.
-- Manual refresh updates only the saved profile until you apply it back with **Use selected** / **Use selected Codex**.
+- **Renew tokens** updates only the saved profile until you apply it back with **Use selected** / **Use selected Codex**.
 
 `Kilo New` always reads from and writes to `~/.local/share/kilo/auth.json`, and that file is used by Kilo New in both VSCode and Antigravity.
 
