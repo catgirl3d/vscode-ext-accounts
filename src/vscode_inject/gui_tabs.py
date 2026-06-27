@@ -1,9 +1,10 @@
 import datetime
 import os
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
 from . import account_services
@@ -11,8 +12,6 @@ from . import saved_account_status
 
 
 IDE_EXTENSION_ORDER = ("kilocode", "roo-cline", "kilo-new")
-IDE_STATE_LABEL_WIDTH = 24
-CURRENT_IDE_LABEL_WIDTH = 24
 CODEX_CURRENT_LABEL_WIDTH = 16
 EXPIRED_ROW_TAG = "expired"
 EXPIRED_ROW_FG = "#f38ba8"
@@ -20,6 +19,9 @@ REFRESH_ERROR_ROW_TAG = "refresh_error"
 REFRESH_ERROR_ROW_FG = "#fab387"
 TERMINAL_REFRESH_ERROR_ROW_TAG = "terminal_refresh_error"
 TERMINAL_REFRESH_ERROR_ROW_FG = "#f38ba8"
+SECTION_BG = "#181825"
+RUNTIME_STATUS_VARIANTS = ("running !", "closed OK")
+LAYOUT_WIDTH_PAD_PX = 4
 IDE_ACCOUNT_IMPORT_HINT = (
     "Paste a JSON object or a one-item JSON array. Required fields: "
     "access_token, refresh_token, id_token. Optional: account_id and expires."
@@ -39,6 +41,11 @@ IDE_ACCOUNT_IMPORT_EXAMPLE = (
 
 def current_time_ms():
     return int(datetime.datetime.now().timestamp() * 1000)
+
+
+def max_text_width_px(font_spec: tuple[str, ...], texts: Sequence[str]) -> int:
+    font = tkfont.Font(font=font_spec)
+    return max((font.measure(text) for text in texts), default=0)
 
 
 @dataclass
@@ -380,11 +387,31 @@ class IdeAccountsTab:
         db = self.services.db
         bg = self.services.bg
         fg = self.services.fg
+        section_label_font = ("Segoe UI", 9, "bold")
+        runtime_status_width = max_text_width_px(
+            section_label_font,
+            [
+                f"{str(cfg.get('label', ide))}: {status}"
+                for ide, cfg in db.IDE_PATHS.items()
+                for status in RUNTIME_STATUS_VARIANTS
+            ],
+        ) + 12 + LAYOUT_WIDTH_PAD_PX
+        current_ide_label_width = max_text_width_px(
+            section_label_font,
+            [f"Current in {str(cfg.get('label', ide))}:" for ide, cfg in db.IDE_PATHS.items()],
+        ) + LAYOUT_WIDTH_PAD_PX
 
-        ide_top = tk.Frame(self.frame, bg=bg, pady=6)
-        ide_top.pack(fill="x", padx=10)
+        header = tk.Frame(self.frame, bg=bg, pady=3)
+        header.pack(fill="x", padx=10)
+        header.grid_columnconfigure(0, weight=0)
+        header.grid_columnconfigure(1, weight=0)
+        header.grid_columnconfigure(2, weight=1)
 
-        tk.Label(ide_top, text="IDE:", bg=bg, fg="#6c7086", font=("Segoe UI", 9)).pack(side="left")
+        ide_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_bg, highlightthickness=1)
+        ide_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        tk.Label(ide_card, text="Target IDE", bg=SECTION_BG, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        ide_top = tk.Frame(ide_card, bg=SECTION_BG)
+        ide_top.pack(fill="x", pady=(4, 0))
         for value, label in [("vscode", "VSCode"), ("antigravity", "Antigravity")]:
             tk.Radiobutton(
                 ide_top,
@@ -392,61 +419,85 @@ class IdeAccountsTab:
                 variable=self.ide_var,
                 value=value,
                 command=self.on_ide_change,
-                bg=bg,
+                bg=SECTION_BG,
                 fg=fg,
                 selectcolor=self.services.btn_bg,
-                activebackground=bg,
+                activebackground=SECTION_BG,
                 activeforeground=fg,
                 font=("Segoe UI", 9, "bold"),
-            ).pack(side="left", padx=4)
+            ).pack(side="left", padx=(0, 10))
 
-        tk.Label(ide_top, text="  ", bg=bg).pack(side="left")
-
+        runtime_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_bg, highlightthickness=1)
+        runtime_card.grid(row=0, column=1, sticky="nsew", padx=4)
+        runtime_card.grid_columnconfigure(0, minsize=runtime_status_width)
+        tk.Label(runtime_card, text="Runtime status", bg=SECTION_BG, fg="#6c7086", font=section_label_font).grid(row=0, column=0, sticky="w")
         self.ide_state_label = tk.Label(
-            ide_top,
+            runtime_card,
             text="",
-            width=IDE_STATE_LABEL_WIDTH,
             anchor="w",
-            bg=bg,
+            bg=self.services.btn_bg,
             fg=fg,
-            font=("Segoe UI", 10, "bold"),
+            font=section_label_font,
+            padx=6,
+            pady=2,
         )
-        self.ide_state_label.pack(side="left", padx=(0, 20))
+        self.ide_state_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
 
-        tk.Label(ide_top, text="Extensions:", bg=bg, fg="#6c7086", font=("Segoe UI", 9)).pack(side="left")
-        ide_ext_frame = tk.Frame(ide_top, bg=bg)
-        ide_ext_frame.pack(side="left")
+        ext_card = tk.Frame(header, bg=SECTION_BG, padx=8, pady=6, highlightbackground=self.services.btn_bg, highlightthickness=1)
+        ext_card.grid(row=0, column=2, sticky="nsew", padx=(4, 0))
+        tk.Label(ext_card, text="Extensions", bg=SECTION_BG, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        ide_ext_frame = tk.Frame(ext_card, bg=SECTION_BG)
+        ide_ext_frame.pack(fill="x", pady=(4, 0))
         for value, label in [("kilocode", "Kilocode"), ("roo-cline", "Roo-Cline"), ("kilo-new", "Kilo New")]:
             tk.Checkbutton(
                 ide_ext_frame,
                 text=label,
                 variable=self.ide_ext_vars[value],
-                bg=bg,
+                bg=SECTION_BG,
                 fg=fg,
                 selectcolor=self.services.btn_bg,
-                activebackground=bg,
+                activebackground=SECTION_BG,
                 activeforeground=fg,
                 font=("Segoe UI", 9),
-            ).pack(side="left", padx=4)
+            ).pack(side="left", padx=(0, 10))
 
-        current_ide_frame = tk.Frame(self.frame, bg=bg)
-        current_ide_frame.pack(fill="x", padx=10, pady=(0, 2))
+        current_ide_frame = tk.Frame(
+            header,
+            bg=SECTION_BG,
+            padx=8,
+            pady=6,
+            highlightbackground=self.services.btn_bg,
+            highlightthickness=1,
+        )
+        current_ide_frame.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        current_ide_frame.grid_columnconfigure(0, minsize=current_ide_label_width)
+        current_ide_frame.grid_columnconfigure(1, weight=1)
 
         self.current_ide_label = tk.Label(
             current_ide_frame,
             text="Current in VSCode:",
-            width=CURRENT_IDE_LABEL_WIDTH,
             anchor="w",
-            bg=bg,
+            bg=SECTION_BG,
             fg="#6c7086",
-            font=("Segoe UI", 9, "bold"),
+            font=section_label_font,
         )
-        self.current_ide_label.pack(side="left")
+        self.current_ide_label.grid(row=0, column=0, sticky="w")
+
+        current_values_frame = tk.Frame(current_ide_frame, bg=SECTION_BG)
+        current_values_frame.grid(row=0, column=1, sticky="ew", padx=(10, 0))
 
         for ext_name in IDE_EXTENSION_ORDER:
             ext_id = db.IDE_EXTENSIONS[ext_name]
-            label = tk.Label(current_ide_frame, text="", bg=bg, fg="#6c7086", font=("Segoe UI", 9))
-            label.pack(side="left", padx=(8, 0))
+            label = tk.Label(
+                current_values_frame,
+                text="",
+                bg=self.services.btn_bg,
+                fg="#6c7086",
+                font=("Segoe UI", 9),
+                padx=6,
+                pady=2,
+            )
+            label.pack(side="left", padx=(0, 6))
             self.current_ide_labels[ext_id] = label
 
         ide_cols = ("name", "ext", "accountIds", "saved", "expires", "active", "status")
@@ -468,7 +519,7 @@ class IdeAccountsTab:
         self.tree.tag_configure(EXPIRED_ROW_TAG, foreground=EXPIRED_ROW_FG)
         self.tree.tag_configure(REFRESH_ERROR_ROW_TAG, foreground=REFRESH_ERROR_ROW_FG)
         self.tree.tag_configure(TERMINAL_REFRESH_ERROR_ROW_TAG, foreground=TERMINAL_REFRESH_ERROR_ROW_FG)
-        self.tree.pack(padx=10, pady=(0, 6))
+        self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 6))
         self.context_menu = tk.Menu(self.tree, tearoff=False)
         self.context_menu.add_command(label="Use selected", command=self.on_use)
         self.context_menu.add_command(label="Rename", command=self.on_rename)
@@ -546,9 +597,9 @@ class IdeAccountsTab:
             info = current_accounts.get(ext_id)
             short = db._EXT_DISPLAY.get(ext_id, ext_id)
             if info:
-                widget.config(text=f"  {short}: {shorten_account_id(info.get('accountId'))}", fg="#a6e3a1")
+                widget.config(text=f"{short}: {shorten_account_id(info.get('accountId'))}", fg="#a6e3a1")
             else:
-                widget.config(text=f"  {short}: -", fg="#6c7086")
+                widget.config(text=f"{short}: -", fg="#6c7086")
 
     def refresh_runtime_state(self, force: bool = False) -> bool:
         current_ide = self.ide_var.get()

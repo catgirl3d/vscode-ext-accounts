@@ -382,7 +382,7 @@ class IdeAccountsTabTests(unittest.TestCase):
         self.assertEqual(tab.current_ide_label.cget("text"), "Current in VSCode:")
         self.assertIn("kilocode:", tab.current_ide_labels["kilocode.kilo-code"].cget("text"))
         self.assertTrue(tab.current_ide_labels["kilocode.kilo-code"].cget("text").endswith("..."))
-        self.assertEqual(tab.current_ide_labels["rooveterinaryinc.roo-cline"].cget("text"), "  roo-cline: -")
+        self.assertEqual(tab.current_ide_labels["rooveterinaryinc.roo-cline"].cget("text"), "roo-cline: -")
 
     def test_refresh_runtime_state_hides_visible_run_button_when_ide_starts_running(self):
         running_state = {"vscode": False, "antigravity": False}
