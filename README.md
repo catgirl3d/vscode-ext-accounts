@@ -2,6 +2,8 @@
 
 [🇺🇦 Українська](README.uk.md)
 
+![VSCode Account Manager](1.png)
+
 A GUI utility for managing saved accounts for VSCode/Antigravity extensions and standalone Codex.
 It reads and writes account data stored in `state.vscdb` (AES-256-GCM via Windows DPAPI), `~/.local/share/kilo/auth.json`, and `~/.codex/auth.json`.
 

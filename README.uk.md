@@ -2,6 +2,8 @@
 
 [🇬🇧 English](README.md)
 
+![VSCode Account Manager](1.png)
+
 GUI-утиліта для керування збереженими акаунтами розширень VSCode/Antigravity та окремим Codex.
 Вона читає та записує дані акаунтів, що зберігаються у `state.vscdb` (AES-256-GCM через Windows DPAPI), `~/.local/share/kilo/auth.json` та `~/.codex/auth.json`.
 
