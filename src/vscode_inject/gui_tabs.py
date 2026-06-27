@@ -12,7 +12,6 @@ from . import saved_account_status
 
 
 IDE_EXTENSION_ORDER = ("kilocode", "roo-cline", "kilo-new")
-CODEX_CURRENT_LABEL_WIDTH = 16
 EXPIRED_ROW_TAG = "expired"
 EXPIRED_ROW_FG = "#f38ba8"
 REFRESH_ERROR_ROW_TAG = "refresh_error"
@@ -835,25 +834,57 @@ class CodexTab:
     def _build(self):
         bg = self.services.bg
         fg = self.services.fg
+        section_label_font = ("Segoe UI", 9, "bold")
+        current_value_width = max_text_width_px(("Segoe UI", 9), ["-", shorten_account_id("12345678901234567890")]) + 20
 
-        top = tk.Frame(self.frame, bg=bg, pady=6)
-        top.pack(fill="x", padx=10)
-        tk.Label(top, text="Auth file:", bg=bg, fg="#6c7086", font=("Segoe UI", 9)).pack(side="left")
-        tk.Label(top, text=self.services.db.CODEX_AUTH_PATH, bg=bg, fg=fg, font=("Segoe UI", 9)).pack(side="left", padx=(6, 0))
+        header = tk.Frame(self.frame, bg=bg, pady=3)
+        header.pack(fill="x", padx=10)
+        header.grid_columnconfigure(0, weight=0)
+        header.grid_columnconfigure(1, weight=1)
 
-        current_frame = tk.Frame(self.frame, bg=bg)
-        current_frame.pack(fill="x", padx=10, pady=(0, 6))
-        tk.Label(
-            current_frame,
-            text="Current Codex:",
-            width=CODEX_CURRENT_LABEL_WIDTH,
-            anchor="w",
-            bg=bg,
+        current_card = tk.Frame(
+            header,
+            bg=SECTION_BG,
+            padx=8,
+            pady=6,
+            highlightbackground=self.services.btn_bg,
+            highlightthickness=1,
+        )
+        current_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        current_card.grid_columnconfigure(0, minsize=current_value_width)
+        tk.Label(current_card, text="Current Codex", bg=SECTION_BG, fg="#6c7086", font=section_label_font).grid(row=0, column=0, sticky="w")
+        self.current_value = tk.Label(
+            current_card,
+            text="-",
+            bg=self.services.btn_bg,
             fg="#6c7086",
-            font=("Segoe UI", 9, "bold"),
-        ).pack(side="left")
-        self.current_value = tk.Label(current_frame, text="-", bg=bg, fg="#6c7086", font=("Segoe UI", 9))
-        self.current_value.pack(side="left")
+            font=("Segoe UI", 9),
+            anchor="w",
+            padx=6,
+            pady=2,
+        )
+        self.current_value.grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        auth_card = tk.Frame(
+            header,
+            bg=SECTION_BG,
+            padx=8,
+            pady=6,
+            highlightbackground=self.services.btn_bg,
+            highlightthickness=1,
+        )
+        auth_card.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        tk.Label(auth_card, text="Auth file", bg=SECTION_BG, fg="#6c7086", font=section_label_font).pack(anchor="w")
+        tk.Label(
+            auth_card,
+            text=self.services.db.CODEX_AUTH_PATH,
+            bg=SECTION_BG,
+            fg=fg,
+            justify="left",
+            anchor="w",
+            wraplength=560,
+            font=("Segoe UI", 9),
+        ).pack(fill="x", pady=(4, 0))
 
         cols = ("name", "accountId", "saved", "expires", "active", "status")
         self.tree = ttk.Treeview(self.frame, columns=cols, show="headings", height=8, selectmode="browse")
@@ -872,7 +903,7 @@ class CodexTab:
         self.tree.tag_configure(EXPIRED_ROW_TAG, foreground=EXPIRED_ROW_FG)
         self.tree.tag_configure(REFRESH_ERROR_ROW_TAG, foreground=REFRESH_ERROR_ROW_FG)
         self.tree.tag_configure(TERMINAL_REFRESH_ERROR_ROW_TAG, foreground=TERMINAL_REFRESH_ERROR_ROW_FG)
-        self.tree.pack(padx=10, pady=(0, 6))
+        self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 6))
         self.context_menu = tk.Menu(self.tree, tearoff=False)
         self.context_menu.add_command(label="Use selected", command=self.on_use)
         self.context_menu.add_command(label="Rename", command=self.on_rename)
