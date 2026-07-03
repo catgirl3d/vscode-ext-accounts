@@ -244,7 +244,7 @@ class IdeAccountsTabTests(unittest.TestCase):
         self.assertEqual(label_config.call_count, 1)
         self.assertEqual(update_visibility.call_count, 1)
 
-    def test_on_use_allows_experimental_kilo_new_live_write_for_vscode_too(self):
+    def test_on_use_allows_kilo_new_live_write_for_vscode_too(self):
         db_module = self.make_db(running=False, vscode_running=True)
         services = self.make_services(db_module)
         services.run_guarded = Mock()
@@ -252,12 +252,12 @@ class IdeAccountsTabTests(unittest.TestCase):
         tab = IdeAccountsTab(notebook, services)
 
         with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch.object(tab, "selected_exts", return_value=["kilo-new"]), patch(
-            "vscode_inject.gui_tabs.messagebox.askyesno", side_effect=[True, True]
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
         ) as askyesno, patch("vscode_inject.gui_tabs.messagebox.showerror") as showerror:
             tab.on_use()
 
         showerror.assert_not_called()
-        self.assertEqual(askyesno.call_count, 2)
+        askyesno.assert_called_once_with("Switch IDE account", "Switch 'alice' [kilo-new]?")
         services.run_guarded.assert_called_once_with(
             db_module.use_ide_account,
             "alice",
@@ -266,7 +266,7 @@ class IdeAccountsTabTests(unittest.TestCase):
             success_msg="Switched 'alice' [kilo-new]",
         )
 
-    def test_on_use_requires_both_ides_closed_for_kilo_new_without_experimental_mode(self):
+    def test_on_use_cancels_kilo_new_live_write_when_switch_confirmation_is_rejected(self):
         db_module = self.make_db(running=False, antigravity_running=True)
         services = self.make_services(db_module)
         services.run_guarded = Mock()
@@ -279,7 +279,7 @@ class IdeAccountsTabTests(unittest.TestCase):
             tab.on_use()
 
         showerror.assert_not_called()
-        askyesno.assert_called_once()
+        askyesno.assert_called_once_with("Switch IDE account", "Switch 'alice' [kilo-new]?")
         services.run_guarded.assert_not_called()
 
     def test_on_use_still_blocks_running_antigravity_when_db_write_is_needed(self):
