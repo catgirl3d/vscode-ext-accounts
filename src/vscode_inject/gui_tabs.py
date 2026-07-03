@@ -934,14 +934,6 @@ class IdeAccountsTab(SavedAccountsTreeTab):
                 messagebox.showerror(f"{running_labels} running", f"Close {running_labels} before switching accounts.")
                 return
 
-            running_labels = self.format_ide_labels(running_kilo_new_ides)
-            prompt = (
-                f"{running_labels} may be using shared Kilo New auth.\n"
-                "Experimental mode will rewrite the shared Kilo New auth.json without closing the IDE.\n"
-                "Use this only for testing. Continue?"
-            )
-            if not messagebox.askyesno("Experimental Kilo New write", prompt):
-                return
             allow_kilo_new_while_running = True
 
         label = self.format_ext_selection(exts)
