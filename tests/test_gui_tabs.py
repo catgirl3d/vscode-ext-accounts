@@ -509,6 +509,40 @@ class IdeAccountsTabTests(unittest.TestCase):
     def test_on_ide_change_and_save_handlers_delegate_correctly(self):
         db_module = self.make_db(running=False)
         db_module.set_ide = Mock()
+        db_module.list_saved_accounts = lambda kind: [
+            {
+                "name": "alice",
+                "data": {
+                    "ext": "kilocode",
+                    "saved_at": "2026-05-15T10:00:00",
+                    "entries": [
+                        {
+                            "key": db_module.IDE_EXTENSIONS["kilocode"],
+                            "value": {
+                                "accountId": "acct-1",
+                                "expires": 4_102_444_800_000,
+                            },
+                        }
+                    ],
+                },
+            },
+            {
+                "name": "bob",
+                "data": {
+                    "ext": "roo-cline",
+                    "saved_at": "2026-05-16T10:00:00",
+                    "entries": [
+                        {
+                            "key": db_module.IDE_EXTENSIONS["roo-cline"],
+                            "value": {
+                                "accountId": "acct-2",
+                                "expires": 4_102_444_800_000,
+                            },
+                        }
+                    ],
+                },
+            },
+        ]
         services = self.make_services(db_module)
         services.run_guarded = Mock()
         notebook = ttk.Notebook(self.root)
@@ -518,6 +552,18 @@ class IdeAccountsTabTests(unittest.TestCase):
             tab.on_ide_change()
         db_module.set_ide.assert_called_once_with("vscode")
         refresh.assert_called_once_with()
+
+        db_module.set_ide.reset_mock()
+        tab.refresh()
+        gui_tabs.select_tree_item(tab.tree, "bob")
+        tab.ide_var.set("antigravity")
+
+        with patch.object(tab.tree, "focus_set") as focus_set:
+            tab.on_ide_change()
+
+        db_module.set_ide.assert_called_once_with("antigravity")
+        self.assertEqual(tab.tree.selection(), ("bob",))
+        focus_set.assert_not_called()
 
         with patch("vscode_inject.gui_tabs.ask_account_name", return_value=None):
             tab.on_save()

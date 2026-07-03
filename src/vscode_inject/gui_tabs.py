@@ -486,6 +486,8 @@ class SavedAccountsTreeTab:
         build_row: Callable[[dict, Any], SavedAccountTreeRow | None],
         after_present: Callable[[Any], None] | None = None,
     ):
+        previous_selection = self.tree.selection()
+        previous_iid = previous_selection[0] if previous_selection else None
         self.tree.delete(*self.tree.get_children())
         current_state = load_current_state()
         update_current_state(current_state)
@@ -496,6 +498,10 @@ class SavedAccountsTreeTab:
             self.tree.insert("", "end", iid=row.iid, values=row.values, tags=row.tags)
         if after_present:
             after_present(current_state)
+        if previous_iid and self.tree.exists(previous_iid):
+            self.tree.selection_set(previous_iid)
+            self.tree.focus(previous_iid)
+            self.tree.see(previous_iid)
 
     def selected_saved_account_name(self):
         return selected_name(self.tree, self._require_saved_account_config_value("selection_empty_message"))
