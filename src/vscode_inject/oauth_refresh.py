@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import copy
 import datetime
 import json
@@ -9,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 from urllib import error, parse, request
 
+from .jwt_utils import decode_jwt_claims
 from .openai_codex import OPENAI_CODEX_PROVIDER
 from .saved_account_status import (
     REFRESH_STATUS_ERROR,
@@ -194,23 +194,6 @@ def current_time_ms() -> int:
 
 def current_time_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def decode_jwt_claims(token: str | None) -> dict[str, Any] | None:
-    if not token:
-        return None
-
-    try:
-        parts = token.split(".")
-        if len(parts) != 3:
-            return None
-        payload = parts[1] + "=" * (-len(parts[1]) % 4)
-        decoded = base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8")
-        claims = json.loads(decoded)
-    except Exception:
-        return None
-
-    return claims if isinstance(claims, dict) else None
 
 
 def extract_account_id_from_claims(claims: Mapping[str, Any] | None) -> str | None:

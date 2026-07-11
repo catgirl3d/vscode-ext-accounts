@@ -374,6 +374,7 @@ class ParseVscdbTests(unittest.TestCase):
             from_omp_import_format=db.omp_store.from_omp_import_format,
             load_saved_account_data=db._load_saved_account_data,
             write_saved_account_data=db._write_saved_account_data,
+            operation_lock=db.SAVED_ACCOUNT_REFRESH_LOCK,
             user_facing_error_cls=db.UserFacingError,
         )
 

@@ -1,22 +1,10 @@
-import base64
 import datetime
 import json
 import os
 
+from .jwt_utils import decode_jwt_exp_ms
 from .openai_codex import OPENAI_CODEX_PROVIDER
 from .oauth_refresh import extract_email
-
-
-def decode_jwt_exp_ms(token: str | None) -> int:
-    if not token:
-        return 0
-    try:
-        payload_b64 = token.split(".")[1]
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        payload = json.loads(base64.b64decode(payload_b64).decode("utf-8"))
-        return int(payload.get("exp", 0)) * 1000
-    except Exception:
-        return 0
 
 
 def read_codex_auth(auth_path: str) -> dict:

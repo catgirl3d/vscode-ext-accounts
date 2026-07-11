@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
 import sqlite3
 from typing import Any, Mapping, Sequence
 
+from .jwt_utils import decode_jwt_exp_ms
 from .openai_codex import OPENAI_CODEX_PROVIDER
+from .openai_identity import identity_key_for_value, normalized_email as _normalized_email
 
 
 OAUTH_CREDENTIAL_TYPE = "oauth"
@@ -15,36 +16,6 @@ REPLACED_DISABLED_CAUSE = "replaced by vscode-ext-accounts"
 
 def _as_string(value: object) -> str:
     return value if isinstance(value, str) else ""
-
-
-def decode_jwt_exp_ms(token: str | None) -> int:
-    if not token:
-        return 0
-    try:
-        payload_b64 = token.split(".")[1]
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64).decode("utf-8"))
-        return int(payload.get("exp", 0)) * 1000
-    except Exception:
-        return 0
-
-
-def _normalized_email(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip().lower()
-    return normalized or None
-
-
-def identity_key_for_value(value: Mapping[str, Any]) -> str | None:
-    email = _normalized_email(value.get("email"))
-    if email:
-        return f"email:{email}"
-
-    account_id = value.get("accountId") or value.get("account_id")
-    if isinstance(account_id, str) and account_id:
-        return f"account:{account_id}"
-    return None
 
 
 def from_omp_auth_format(value: Mapping[str, Any], *, identity_key: str | None = None) -> dict[str, Any]:
@@ -81,7 +52,7 @@ def from_omp_import_format(value: Mapping[str, Any]) -> dict[str, Any]:
     account_id_str = account_id if isinstance(account_id, str) else ""
 
     expires = value.get("expires")
-    expires_ms = expires if isinstance(expires, int) else 0
+    expires_ms = expires if type(expires) is int else 0
     if not expires_ms:
         expires_ms = decode_jwt_exp_ms(access_token_str)
 

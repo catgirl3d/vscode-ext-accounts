@@ -281,8 +281,28 @@ class AccountServicesModuleTests(TempDirTestCase):
                 user_facing_error_cls=UserFacingError,
             )
 
+        with self.assertRaisesRegex(UserFacingError, "could not decode access token expiry"):
+            account_services.import_omp_openai_account_data(
+                {"access_token": "access-1", "refresh_token": "refresh-1", "expires": True},
+                "omp-bool-exp",
+                omp_key="omp://openai",
+                from_omp_import_format=lambda value: value,
+                write_account_file=lambda *args: "unused.json",
+                user_facing_error_cls=UserFacingError,
+            )
+
     def test_append_omp_openai_account_data_merges_into_existing_saved_set(self):
         persisted: list[tuple[str, dict]] = []
+        lock_events: list[str] = []
+
+        class RecorderLock:
+            def __enter__(self):
+                lock_events.append("enter")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                lock_events.append("exit")
+                return False
 
         result = account_services.append_omp_openai_account_data(
             [
@@ -316,6 +336,11 @@ class AccountServicesModuleTests(TempDirTestCase):
                     "kind": "omp",
                     "ext": "omp-openai",
                     "refresh_status": "error",
+                    "refresh_error": "boom",
+                    "refresh_error_at": "2026-05-15T12:00:00Z",
+                    "auto_refresh_disabled_groups": [
+                        {"provider": "openai-codex", "refresh_token": "refresh-2"}
+                    ],
                     "entries": [
                         {
                             "key": "omp://openai",
@@ -343,7 +368,8 @@ class AccountServicesModuleTests(TempDirTestCase):
                 },
                 "omp",
             ),
-            write_saved_account_data=lambda path, data: persisted.append((path, data)),
+            write_saved_account_data=lambda path, data: lock_events.append("write") or persisted.append((path, data)),
+            operation_lock=RecorderLock(),
             user_facing_error_cls=UserFacingError,
         )
 
@@ -354,7 +380,14 @@ class AccountServicesModuleTests(TempDirTestCase):
         self.assertEqual(len(persisted), 1)
         self.assertEqual(persisted[0][0], "team-set.json")
         self.assertEqual(persisted[0][1]["name"], "team-set")
-        self.assertNotIn("refresh_status", persisted[0][1])
+        self.assertEqual(persisted[0][1]["refresh_status"], "error")
+        self.assertEqual(persisted[0][1]["refresh_error"], "boom")
+        self.assertEqual(persisted[0][1]["refresh_error_at"], "2026-05-15T12:00:00Z")
+        self.assertEqual(
+            persisted[0][1]["auto_refresh_disabled_groups"],
+            [{"provider": "openai-codex", "refresh_token": "refresh-2"}],
+        )
+        self.assertEqual(lock_events, ["enter", "write", "exit"])
 
         with self.assertRaisesRegex(UserFacingError, "invalid entries payload"):
             account_services.append_omp_openai_account_data(

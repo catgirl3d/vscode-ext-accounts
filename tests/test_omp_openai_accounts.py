@@ -13,6 +13,7 @@ import base64
 from pathlib import Path
 
 from vscode_inject import omp_openai_accounts
+from vscode_inject import openai_identity
 
 
 def create_agent_db(path: Path) -> None:
@@ -244,6 +245,18 @@ class OmpOpenAIAccountsTests(unittest.TestCase):
         self.assertEqual(explicit["expires"], 123)
         self.assertEqual(explicit["identity_key"], "custom:acct-2")
         self.assertEqual(explicit["id_token"], "id-2")
+        self.assertEqual(openai_identity.identity_key_for_value({"email": " User@Example.com "}), "email:user@example.com")
+        self.assertEqual(openai_identity.identity_key_for_value({"account_id": "acct-3"}), "account:acct-3")
+
+        from_bool_expiry = omp_openai_accounts.from_omp_import_format(
+            {
+                "access_token": token,
+                "refresh_token": "refresh-3",
+                "account_id": "acct-3",
+                "expires": True,
+            }
+        )
+        self.assertEqual(from_bool_expiry["expires"], 1_767_225_600_000)
 
 
 if __name__ == "__main__":

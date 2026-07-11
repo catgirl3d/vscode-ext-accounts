@@ -861,6 +861,7 @@ def append_omp_openai_account_from_json_string(json_str: str, target_name: str):
         from_omp_import_format=omp_store.from_omp_import_format,
         load_saved_account_data=_load_saved_account_data,
         write_saved_account_data=_write_saved_account_data,
+        operation_lock=SAVED_ACCOUNT_REFRESH_LOCK,
         user_facing_error_cls=UserFacingError,
     )
     exp_dt = datetime.datetime.fromtimestamp(account_services.first_expires_ms(result.entries) / 1000)
