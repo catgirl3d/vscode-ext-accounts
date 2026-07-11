@@ -936,6 +936,66 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
             ],
         )
 
+    def test_import_and_append_omp_openai_account_from_json_string_manage_multi_account_saved_set(self):
+        accounts_dir = self.root / "accounts"
+        self.patch_db("ACCOUNTS_DIR", str(accounts_dir))
+
+        import_output = self.capture_output(
+            db.import_omp_openai_account_from_json_string,
+            json.dumps(
+                {
+                    "access_token": "access-import-omp",
+                    "refresh_token": "refresh-import-omp",
+                    "account_id": "acct-import-omp",
+                    "email": "omp1@example.com",
+                    "expires": 1720000000000,
+                }
+            ),
+            "omp_team",
+        )
+
+        self.assertIn("Imported OMP OpenAI account 'omp_team' [omp-openai]", import_output)
+        saved_path = accounts_dir / "omp_team.json"
+        saved_data = json.loads(saved_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved_data["kind"], "omp")
+        self.assertEqual(saved_data["ext"], "omp-openai")
+        self.assertEqual(len(saved_data["entries"]), 1)
+        self.assertEqual(saved_data["entries"][0]["value"]["accountId"], "acct-import-omp")
+
+        append_output = self.capture_output(
+            db.append_omp_openai_account_from_json_string,
+            json.dumps(
+                [
+                    {
+                        "access_token": "access-replaced-omp",
+                        "refresh_token": "refresh-replaced-omp",
+                        "account_id": "acct-import-omp",
+                        "email": "omp1@example.com",
+                        "expires": 1720000000100,
+                    },
+                    {
+                        "access_token": "access-second-omp",
+                        "refresh_token": "refresh-second-omp",
+                        "account_id": "acct-second-omp",
+                        "email": "omp2@example.com",
+                        "expires": 1720000000200,
+                    },
+                ]
+            ),
+            "omp_team",
+        )
+
+        self.assertIn("Added imported OMP OpenAI credential(s) to 'omp_team'", append_output)
+        updated_data = json.loads(saved_path.read_text(encoding="utf-8"))
+        self.assertEqual(updated_data["kind"], "omp")
+        self.assertEqual(updated_data["ext"], "omp-openai")
+        self.assertEqual(len(updated_data["entries"]), 2)
+        self.assertEqual(
+            [entry["value"]["accountId"] for entry in updated_data["entries"]],
+            ["acct-import-omp", "acct-second-omp"],
+        )
+        self.assertEqual(updated_data["entries"][0]["value"]["refresh_token"], "refresh-replaced-omp")
+
     def test_refresh_saved_account_performs_oauth_refresher_flow_and_saves_batch(self):
         accounts_dir = self.root / "accounts"
         account_data = {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
@@ -14,6 +15,18 @@ REPLACED_DISABLED_CAUSE = "replaced by vscode-ext-accounts"
 
 def _as_string(value: object) -> str:
     return value if isinstance(value, str) else ""
+
+
+def decode_jwt_exp_ms(token: str | None) -> int:
+    if not token:
+        return 0
+    try:
+        payload_b64 = token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64).decode("utf-8"))
+        return int(payload.get("exp", 0)) * 1000
+    except Exception:
+        return 0
 
 
 def _normalized_email(value: object) -> str | None:
@@ -53,6 +66,48 @@ def from_omp_auth_format(value: Mapping[str, Any], *, identity_key: str | None =
 
     if isinstance(identity_key, str) and identity_key:
         normalized["identity_key"] = identity_key
+
+    return normalized
+
+
+def from_omp_import_format(value: Mapping[str, Any]) -> dict[str, Any]:
+    access_token = value.get("access_token") or value.get("access")
+    access_token_str = access_token if isinstance(access_token, str) else ""
+
+    refresh_token = value.get("refresh_token") or value.get("refresh")
+    refresh_token_str = refresh_token if isinstance(refresh_token, str) else ""
+
+    account_id = value.get("account_id") or value.get("accountId")
+    account_id_str = account_id if isinstance(account_id, str) else ""
+
+    expires = value.get("expires")
+    expires_ms = expires if isinstance(expires, int) else 0
+    if not expires_ms:
+        expires_ms = decode_jwt_exp_ms(access_token_str)
+
+    normalized: dict[str, Any] = {
+        "type": OPENAI_CODEX_PROVIDER,
+        "access_token": access_token_str,
+        "refresh_token": refresh_token_str,
+        "expires": expires_ms,
+        "accountId": account_id_str,
+    }
+
+    email = _normalized_email(value.get("email"))
+    if email:
+        normalized["email"] = email
+
+    id_token = value.get("id_token")
+    if isinstance(id_token, str) and id_token:
+        normalized["id_token"] = id_token
+
+    explicit_identity_key = value.get("identity_key")
+    if isinstance(explicit_identity_key, str) and explicit_identity_key:
+        normalized["identity_key"] = explicit_identity_key
+    else:
+        derived_identity_key = identity_key_for_value(normalized)
+        if derived_identity_key:
+            normalized["identity_key"] = derived_identity_key
 
     return normalized
 

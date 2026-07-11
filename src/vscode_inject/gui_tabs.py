@@ -39,6 +39,22 @@ IDE_ACCOUNT_IMPORT_EXAMPLE = (
     "  }\n"
     "]"
 )
+OMP_OPENAI_IMPORT_HINT = (
+    "Paste a JSON object or an array of objects. Required fields: "
+    "access_token and refresh_token. Optional: account_id, email, expires, id_token. "
+    "Use an array to import multiple OpenAI accounts into one saved OMP set."
+)
+OMP_OPENAI_IMPORT_EXAMPLE = (
+    "[\n"
+    "  {\n"
+    '    "access_token": "eyJ...",\n'
+    '    "refresh_token": "rt.1....",\n'
+    '    "account_id": "acct-123",\n'
+    '    "email": "user@example.com",\n'
+    '    "expires": 1767225600000\n'
+    "  }\n"
+    "]"
+)
 
 
 def current_time_ms():
@@ -205,12 +221,23 @@ def clipboard_text_or_empty(root: tk.Tk) -> str:
     return value if isinstance(value, str) else str(value)
 
 
-class IdeAccountImportDialog:
-    def __init__(self, services: GuiServices):
+class JsonAccountImportDialog:
+    def __init__(
+        self,
+        services: GuiServices,
+        *,
+        title: str,
+        name_label: str,
+        hint_text: str,
+        example_text: str,
+        initial_name: str = "",
+        name_editable: bool = True,
+    ):
         self.services = services
+        self.title = title
         self.result: tuple[str, str] | None = None
         self.window = tk.Toplevel(services.root)
-        self.window.title("Import IDE Account")
+        self.window.title(title)
         self.window.transient(services.root)
         self.window.configure(bg=services.bg)
         self.window.resizable(True, True)
@@ -221,7 +248,7 @@ class IdeAccountImportDialog:
         content = tk.Frame(self.window, bg=services.bg, padx=12, pady=12)
         content.pack(fill="both", expand=True)
 
-        tk.Label(content, text="Account name:", bg=services.bg, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        tk.Label(content, text=name_label, bg=services.bg, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(anchor="w")
         self.name_entry = tk.Entry(
             content,
             bg=services.btn_bg,
@@ -230,12 +257,16 @@ class IdeAccountImportDialog:
             relief="flat",
             font=("Segoe UI", 10),
         )
+        if initial_name:
+            self.name_entry.insert(0, initial_name)
+        if not name_editable:
+            self.name_entry.configure(state="readonly")
         self.name_entry.pack(fill="x", pady=(4, 10))
 
         tk.Label(content, text="Expected format:", bg=services.bg, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(anchor="w")
         tk.Label(
             content,
-            text=IDE_ACCOUNT_IMPORT_HINT,
+            text=hint_text,
             bg=services.bg,
             fg=services.fg,
             justify="left",
@@ -253,7 +284,7 @@ class IdeAccountImportDialog:
             wrap="none",
             font=("Consolas", 9),
         )
-        self.example_text.insert("1.0", IDE_ACCOUNT_IMPORT_EXAMPLE)
+        self.example_text.insert("1.0", example_text)
         self.example_text.configure(state="disabled")
         self.example_text.pack(fill="x", pady=(0, 10))
 
@@ -317,7 +348,10 @@ class IdeAccountImportDialog:
             cursor="hand2",
         ).pack(side="right")
 
-        self.name_entry.focus_set()
+        if name_editable:
+            self.name_entry.focus_set()
+        else:
+            self.payload_text.focus_set()
 
     def show(self) -> tuple[str, str] | None:
         self.window.grab_set()
@@ -327,7 +361,7 @@ class IdeAccountImportDialog:
     def paste_from_clipboard(self):
         payload = clipboard_text_or_empty(self.services.root)
         if not payload:
-            messagebox.showwarning("Import IDE Account", "Clipboard does not contain text.")
+            messagebox.showwarning(self.title, "Clipboard does not contain text.")
             self.payload_text.focus_set()
             return
         self.payload_text.delete("1.0", "end")
@@ -338,11 +372,11 @@ class IdeAccountImportDialog:
         name = self.name_entry.get().strip()
         payload = self.payload_text.get("1.0", "end-1c").strip()
         if not name:
-            messagebox.showwarning("Import IDE Account", "Enter an account name.")
+            messagebox.showwarning(self.title, "Enter an account name.")
             self.name_entry.focus_set()
             return
         if not payload:
-            messagebox.showwarning("Import IDE Account", "Paste the account JSON to import.")
+            messagebox.showwarning(self.title, "Paste the account JSON to import.")
             self.payload_text.focus_set()
             return
         self.result = (name, payload)
@@ -353,8 +387,41 @@ class IdeAccountImportDialog:
         self.window.destroy()
 
 
+class IdeAccountImportDialog(JsonAccountImportDialog):
+    def __init__(self, services: GuiServices):
+        super().__init__(
+            services,
+            title="Import IDE Account",
+            name_label="Account name:",
+            hint_text=IDE_ACCOUNT_IMPORT_HINT,
+            example_text=IDE_ACCOUNT_IMPORT_EXAMPLE,
+        )
+
+
 def ask_ide_account_import(services: GuiServices) -> tuple[str, str] | None:
     return IdeAccountImportDialog(services).show()
+
+
+def ask_omp_openai_import(services: GuiServices) -> tuple[str, str] | None:
+    return JsonAccountImportDialog(
+        services,
+        title="Import OMP OpenAI Account",
+        name_label="Saved set name:",
+        hint_text=OMP_OPENAI_IMPORT_HINT,
+        example_text=OMP_OPENAI_IMPORT_EXAMPLE,
+    ).show()
+
+
+def ask_omp_openai_append_import(services: GuiServices, target_name: str) -> tuple[str, str] | None:
+    return JsonAccountImportDialog(
+        services,
+        title="Add OMP OpenAI Account",
+        name_label="Saved set:",
+        hint_text=OMP_OPENAI_IMPORT_HINT,
+        example_text=OMP_OPENAI_IMPORT_EXAMPLE,
+        initial_name=target_name,
+        name_editable=False,
+    ).show()
 
 
 def delete_saved_account(db_module, name, *, expected_kind: str | None = None):
@@ -1197,6 +1264,8 @@ class OmpOpenAITab(SavedAccountsTreeTab):
             (
                 SavedAccountActionButton("▶ Use selected OMP", "on_use", accent=True),
                 SavedAccountActionButton("💾 Save current OMP", "on_save"),
+                SavedAccountActionButton("📥 Import account", "on_import_new"),
+                SavedAccountActionButton("➕ Add to selected", "on_import_append"),
                 SavedAccountActionButton("↻ Renew tokens", "on_refresh_selected", separator_before=True),
                 SavedAccountActionButton("✏ Rename", "on_rename"),
                 SavedAccountActionButton("🗑 Delete", "on_delete"),
@@ -1274,6 +1343,33 @@ class OmpOpenAITab(SavedAccountsTreeTab):
         if not name:
             return
         self.services.run_guarded(self.services.db.save_omp_openai_account, name, success_msg=f"Saved OMP OpenAI account '{name}'")
+
+    def on_import_new(self):
+        import_data = ask_omp_openai_import(self.services)
+        if not import_data:
+            return
+        name, json_text = import_data
+        self.services.run_guarded(
+            self.services.db.import_omp_openai_account_from_json_string,
+            json_text,
+            name,
+            success_msg=f"Imported OMP OpenAI account '{name}'",
+        )
+
+    def on_import_append(self):
+        target_name = self.selected_saved_account_name()
+        if not target_name:
+            return
+        import_data = ask_omp_openai_append_import(self.services, target_name)
+        if not import_data:
+            return
+        _saved_set_name, json_text = import_data
+        self.services.run_guarded(
+            self.services.db.append_omp_openai_account_from_json_string,
+            json_text,
+            target_name,
+            success_msg=f"Added imported OMP OpenAI credential(s) to '{target_name}'",
+        )
 
     def on_use(self):
         name = self.selected_saved_account_name()

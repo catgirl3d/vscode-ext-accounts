@@ -9,6 +9,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+import base64
 from pathlib import Path
 
 from vscode_inject import omp_openai_accounts
@@ -47,6 +48,12 @@ def read_rows(path: Path) -> list[tuple[int, str, str, str | None, str | None, s
         )
     finally:
         con.close()
+
+
+def jwt_with_exp(exp_seconds: int) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode("ascii").rstrip("=")
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp_seconds}).encode("utf-8")).decode("ascii").rstrip("=")
+    return f"{header}.{payload}.signature"
 
 
 class OmpOpenAIAccountsTests(unittest.TestCase):
@@ -199,6 +206,44 @@ class OmpOpenAIAccountsTests(unittest.TestCase):
                 str(self.db_path),
                 [{"key": "omp://openai", "value": {"access_token": "access-only"}}],
             )
+
+    def test_from_omp_import_format_normalizes_payload_and_derives_identity_and_expiry(self):
+        token = jwt_with_exp(1_767_225_600)
+        normalized = omp_openai_accounts.from_omp_import_format(
+            {
+                "access_token": token,
+                "refresh_token": "refresh-1",
+                "account_id": "acct-1",
+                "email": "User@Example.com",
+            }
+        )
+
+        self.assertEqual(
+            normalized,
+            {
+                "type": omp_openai_accounts.OPENAI_CODEX_PROVIDER,
+                "access_token": token,
+                "refresh_token": "refresh-1",
+                "expires": 1_767_225_600_000,
+                "accountId": "acct-1",
+                "email": "user@example.com",
+                "identity_key": "email:user@example.com",
+            },
+        )
+
+        explicit = omp_openai_accounts.from_omp_import_format(
+            {
+                "access": "access-2",
+                "refresh": "refresh-2",
+                "accountId": "acct-2",
+                "expires": 123,
+                "identity_key": "custom:acct-2",
+                "id_token": "id-2",
+            }
+        )
+        self.assertEqual(explicit["expires"], 123)
+        self.assertEqual(explicit["identity_key"], "custom:acct-2")
+        self.assertEqual(explicit["id_token"], "id-2")
 
 
 if __name__ == "__main__":

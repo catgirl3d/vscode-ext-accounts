@@ -352,6 +352,31 @@ class ParseVscdbTests(unittest.TestCase):
             user_facing_error_cls=db.UserFacingError,
         )
 
+        with patch.object(db.account_services, "import_omp_openai_account_data") as import_omp_openai_account_data:
+            db.import_omp_openai_account_from_json_string('{"access_token":"access-1"}', "imported")
+
+        import_omp_openai_account_data.assert_called_once_with(
+            {"access_token": "access-1"},
+            "imported",
+            omp_key=db.OMP_OPENAI_KEY,
+            from_omp_import_format=db.omp_store.from_omp_import_format,
+            write_account_file=db._write_account_file,
+            user_facing_error_cls=db.UserFacingError,
+        )
+
+        with patch.object(db.account_services, "append_omp_openai_account_data") as append_omp_openai_account_data:
+            db.append_omp_openai_account_from_json_string('{"access_token":"access-2"}', "team")
+
+        append_omp_openai_account_data.assert_called_once_with(
+            {"access_token": "access-2"},
+            "team",
+            omp_key=db.OMP_OPENAI_KEY,
+            from_omp_import_format=db.omp_store.from_omp_import_format,
+            load_saved_account_data=db._load_saved_account_data,
+            write_saved_account_data=db._write_saved_account_data,
+            user_facing_error_cls=db.UserFacingError,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

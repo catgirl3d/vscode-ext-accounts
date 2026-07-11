@@ -827,6 +827,8 @@ class OmpOpenAITabTests(unittest.TestCase):
 
     def make_db(self):
         save_omp_openai_account = Mock(name="save_omp_openai_account")
+        import_omp_openai_account_from_json_string = Mock(name="import_omp_openai_account_from_json_string")
+        append_omp_openai_account_from_json_string = Mock(name="append_omp_openai_account_from_json_string")
         use_omp_openai_account = Mock(name="use_omp_openai_account")
         refresh_saved_account = Mock(name="refresh_saved_account")
         rename_saved_account = Mock(name="rename_saved_account")
@@ -867,6 +869,8 @@ class OmpOpenAITabTests(unittest.TestCase):
             read_current_omp_openai_accounts=lambda: list(current_accounts),
             list_saved_accounts=lambda kind: list(saved_records) if kind == "omp" else [],
             save_omp_openai_account=save_omp_openai_account,
+            import_omp_openai_account_from_json_string=import_omp_openai_account_from_json_string,
+            append_omp_openai_account_from_json_string=append_omp_openai_account_from_json_string,
             use_omp_openai_account=use_omp_openai_account,
             refresh_saved_account=refresh_saved_account,
             rename_saved_account=rename_saved_account,
@@ -910,6 +914,29 @@ class OmpOpenAITabTests(unittest.TestCase):
             db_module.save_omp_openai_account,
             "saved-omp",
             success_msg="Saved OMP OpenAI account 'saved-omp'",
+        )
+
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.ask_omp_openai_import", return_value=("imported-omp", "{\"access_token\":\"a\"}")):
+            tab.on_import_new()
+        services.run_guarded.assert_called_once_with(
+            db_module.import_omp_openai_account_from_json_string,
+            '{"access_token":"a"}',
+            "imported-omp",
+            success_msg="Imported OMP OpenAI account 'imported-omp'",
+        )
+
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.ask_omp_openai_append_import",
+            return_value=("alice", "{\"access_token\":\"b\"}"),
+        ):
+            tab.on_import_append()
+        services.run_guarded.assert_called_once_with(
+            db_module.append_omp_openai_account_from_json_string,
+            '{"access_token":"b"}',
+            "alice",
+            success_msg="Added imported OMP OpenAI credential(s) to 'alice'",
         )
 
         services.run_guarded.reset_mock()

@@ -285,6 +285,173 @@ def save_omp_openai_account(
     )
 
 
+def _normalize_omp_import_items(data: Any, *, user_facing_error_cls) -> list[dict[str, Any]]:
+    if isinstance(data, list):
+        if not data:
+            raise user_facing_error_cls("ERROR: Empty JSON array provided")
+        items = data
+    else:
+        items = [data]
+
+    normalized_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise user_facing_error_cls("ERROR: JSON must be an object or an array of objects")
+        normalized_items.append(item)
+    return normalized_items
+
+
+def _omp_import_entry_merge_key(entry: Mapping[str, Any]) -> str | None:
+    value = entry.get("value")
+    if not isinstance(value, Mapping):
+        return None
+
+    explicit_identity_key = entry.get("identity_key")
+    if isinstance(explicit_identity_key, str) and explicit_identity_key:
+        return f"identity:{explicit_identity_key}"
+
+    embedded_identity_key = value.get("identity_key")
+    if isinstance(embedded_identity_key, str) and embedded_identity_key:
+        return f"identity:{embedded_identity_key}"
+
+    email = value.get("email")
+    if isinstance(email, str):
+        normalized_email = email.strip().lower()
+        if normalized_email:
+            return f"identity:email:{normalized_email}"
+
+    account_id = value.get("accountId") or value.get("account_id")
+    if isinstance(account_id, str) and account_id:
+        return f"identity:account:{account_id}"
+
+    fingerprint = account_fingerprint(dict(value))
+    if fingerprint:
+        return f"fingerprint:{fingerprint}"
+    return None
+
+
+def _dedupe_omp_import_entries(entries: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped_reversed: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for entry in reversed(list(entries)):
+        merge_key = _omp_import_entry_merge_key(entry)
+        if merge_key and merge_key in seen_keys:
+            continue
+        if merge_key:
+            seen_keys.add(merge_key)
+        deduped_reversed.append(entry)
+    deduped_reversed.reverse()
+    return deduped_reversed
+
+
+def _build_omp_import_entries(
+    data: Any,
+    *,
+    omp_key: str,
+    from_omp_import_format,
+    user_facing_error_cls,
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for item in _normalize_omp_import_items(data, user_facing_error_cls=user_facing_error_cls):
+        try:
+            value = from_omp_import_format(item)
+        except ValueError as exc:
+            raise user_facing_error_cls(f"ERROR: {exc}") from exc
+
+        if not value.get("access_token") or not value.get("refresh_token"):
+            raise user_facing_error_cls("ERROR: access_token or refresh_token missing in data")
+        expires_ms = value.get("expires")
+        if not isinstance(expires_ms, int) or expires_ms <= 0:
+            raise user_facing_error_cls("ERROR: could not decode access token expiry from data")
+
+        entry: dict[str, Any] = {"key": omp_key, "value": value}
+        identity_key = item.get("identity_key")
+        if not isinstance(identity_key, str) or not identity_key:
+            identity_key = value.get("identity_key")
+        if isinstance(identity_key, str) and identity_key:
+            entry["identity_key"] = identity_key
+        entries.append(entry)
+
+    return _dedupe_omp_import_entries(entries)
+
+
+def import_omp_openai_account_data(
+    data: Any,
+    name: str,
+    *,
+    omp_key: str,
+    from_omp_import_format,
+    write_account_file,
+    user_facing_error_cls,
+) -> SavedAccountWriteResult:
+    entries = _build_omp_import_entries(
+        data,
+        omp_key=omp_key,
+        from_omp_import_format=from_omp_import_format,
+        user_facing_error_cls=user_facing_error_cls,
+    )
+    return _build_saved_account_write_result(
+        name,
+        "omp",
+        "omp-openai",
+        entries,
+        write_account_file=write_account_file,
+        user_facing_error_cls=user_facing_error_cls,
+    )
+
+
+def append_omp_openai_account_data(
+    data: Any,
+    target_name: str,
+    *,
+    omp_key: str,
+    from_omp_import_format,
+    load_saved_account_data,
+    write_saved_account_data,
+    user_facing_error_cls,
+) -> SavedAccountWriteResult:
+    path, account_data, _kind = load_saved_account_data(target_name, expected_kind="omp")
+    existing_entries = account_data.get("entries", []) if isinstance(account_data, dict) else []
+    if not isinstance(existing_entries, list):
+        raise user_facing_error_cls(f"Account '{target_name}' has an invalid entries payload.")
+
+    imported_entries = _build_omp_import_entries(
+        data,
+        omp_key=omp_key,
+        from_omp_import_format=from_omp_import_format,
+        user_facing_error_cls=user_facing_error_cls,
+    )
+    imported_merge_keys = {
+        merge_key
+        for merge_key in (_omp_import_entry_merge_key(entry) for entry in imported_entries)
+        if isinstance(merge_key, str) and merge_key
+    }
+
+    preserved_entries: list[dict[str, Any]] = []
+    for entry in existing_entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("key") != omp_key:
+            preserved_entries.append(entry)
+            continue
+        merge_key = _omp_import_entry_merge_key(entry)
+        if merge_key and merge_key in imported_merge_keys:
+            continue
+        preserved_entries.append(entry)
+
+    merged_entries = preserved_entries + imported_entries
+    saved_name = account_data.get("name") if isinstance(account_data, dict) and isinstance(account_data.get("name"), str) else target_name
+    updated_data = {
+        "name": saved_name,
+        "kind": "omp",
+        "ext": "omp-openai",
+        "saved_at": datetime.datetime.now().isoformat(),
+        "entries": merged_entries,
+    }
+    write_saved_account_data(path, updated_data)
+    return SavedAccountWriteResult(path=path, ext_label="omp-openai", entries=merged_entries)
+
+
 def refresh_saved_account(
     name: str,
     *,

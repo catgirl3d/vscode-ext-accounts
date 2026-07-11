@@ -660,6 +660,10 @@ def _write_account_file(name: str, kind: str, ext_label: str, entries: list[dict
     return saved_store.write_account_file(_accounts_dir(), SPECIAL_KIND_KEYS, name, kind, ext_label, entries)
 
 
+def _write_saved_account_data(path: str, data: dict) -> None:
+    saved_store.write_saved_account_data(path, data)
+
+
 def _print_saved_entries(entries: list[dict]):
     account_services.print_saved_entries(entries)
 
@@ -817,6 +821,47 @@ def import_ide_account_from_json_string(json_str: str, name: str, exts: list[str
     )
     exp_dt = datetime.datetime.fromtimestamp(account_services.first_expires_ms(result.entries) / 1000)
     print(f"Imported IDE account '{name}' [{result.ext_label}] -> {result.path}")
+    print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
+
+
+def import_omp_openai_account_from_json_string(json_str: str, name: str):
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        raise UserFacingError(f"ERROR: invalid JSON: {exc}") from exc
+
+    result = account_services.import_omp_openai_account_data(
+        data,
+        name,
+        omp_key=OMP_OPENAI_KEY,
+        from_omp_import_format=omp_store.from_omp_import_format,
+        write_account_file=_write_account_file,
+        user_facing_error_cls=UserFacingError,
+    )
+    exp_dt = datetime.datetime.fromtimestamp(account_services.first_expires_ms(result.entries) / 1000)
+    print(f"Imported OMP OpenAI account '{name}' [{result.ext_label}] -> {result.path}")
+    print(f"  credentials: {len(result.entries)}")
+    print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
+
+
+def append_omp_openai_account_from_json_string(json_str: str, target_name: str):
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        raise UserFacingError(f"ERROR: invalid JSON: {exc}") from exc
+
+    result = account_services.append_omp_openai_account_data(
+        data,
+        target_name,
+        omp_key=OMP_OPENAI_KEY,
+        from_omp_import_format=omp_store.from_omp_import_format,
+        load_saved_account_data=_load_saved_account_data,
+        write_saved_account_data=_write_saved_account_data,
+        user_facing_error_cls=UserFacingError,
+    )
+    exp_dt = datetime.datetime.fromtimestamp(account_services.first_expires_ms(result.entries) / 1000)
+    print(f"Added imported OMP OpenAI credential(s) to '{target_name}' -> {result.path}")
+    print(f"  credentials: {len(result.entries)}")
     print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
 
 

@@ -178,6 +178,201 @@ class AccountServicesModuleTests(TempDirTestCase):
             ],
         )
 
+    def test_import_omp_openai_account_data_accepts_object_or_array_and_dedupes_latest_identity(self):
+        write_calls: list[tuple[str, str, str, list[dict]]] = []
+
+        result = account_services.import_omp_openai_account_data(
+            [
+                {
+                    "access_token": "access-old",
+                    "refresh_token": "refresh-shared",
+                    "account_id": "acct-1",
+                    "email": "old@example.com",
+                    "expires": 100,
+                },
+                {
+                    "access_token": "access-new",
+                    "refresh_token": "refresh-shared",
+                    "account_id": "acct-1",
+                    "email": "new@example.com",
+                    "expires": 200,
+                },
+            ],
+            "omp-set",
+            omp_key="omp://openai",
+            from_omp_import_format=lambda value: {
+                "type": "openai-codex",
+                "access_token": value["access_token"],
+                "refresh_token": value["refresh_token"],
+                "accountId": value["account_id"],
+                "email": value.get("email"),
+                "expires": value["expires"],
+                "identity_key": f"account:{value['account_id']}",
+            },
+            write_account_file=lambda name, kind, ext_label, entries: write_calls.append((name, kind, ext_label, entries)) or "omp-set.json",
+            user_facing_error_cls=UserFacingError,
+        )
+
+        self.assertEqual(result.path, "omp-set.json")
+        self.assertEqual(result.ext_label, "omp-openai")
+        self.assertEqual(len(result.entries), 1)
+        self.assertEqual(result.entries[0]["value"]["access_token"], "access-new")
+        self.assertEqual(write_calls[0][1:3], ("omp", "omp-openai"))
+
+        object_result = account_services.import_omp_openai_account_data(
+            {
+                "access_token": "access-2",
+                "refresh_token": "refresh-2",
+                "account_id": "acct-2",
+                "expires": 300,
+            },
+            "omp-single",
+            omp_key="omp://openai",
+            from_omp_import_format=lambda value: {
+                "type": "openai-codex",
+                "access_token": value["access_token"],
+                "refresh_token": value["refresh_token"],
+                "accountId": value["account_id"],
+                "expires": value["expires"],
+            },
+            write_account_file=lambda *args: "omp-single.json",
+            user_facing_error_cls=UserFacingError,
+        )
+        self.assertEqual(object_result.entries[0]["value"]["accountId"], "acct-2")
+
+    def test_import_omp_openai_account_data_validates_payload_and_required_fields(self):
+        with self.assertRaisesRegex(UserFacingError, "Empty JSON array"):
+            account_services.import_omp_openai_account_data(
+                [],
+                "omp-empty",
+                omp_key="omp://openai",
+                from_omp_import_format=lambda value: value,
+                write_account_file=lambda *args: "unused.json",
+                user_facing_error_cls=UserFacingError,
+            )
+
+        with self.assertRaisesRegex(UserFacingError, "JSON must be an object or an array of objects"):
+            account_services.import_omp_openai_account_data(
+                "bad-payload",
+                "omp-bad",
+                omp_key="omp://openai",
+                from_omp_import_format=lambda value: value,
+                write_account_file=lambda *args: "unused.json",
+                user_facing_error_cls=UserFacingError,
+            )
+
+        with self.assertRaisesRegex(UserFacingError, "access_token or refresh_token missing"):
+            account_services.import_omp_openai_account_data(
+                {"refresh_token": "refresh-only", "expires": 100},
+                "omp-missing",
+                omp_key="omp://openai",
+                from_omp_import_format=lambda value: value,
+                write_account_file=lambda *args: "unused.json",
+                user_facing_error_cls=UserFacingError,
+            )
+
+        with self.assertRaisesRegex(UserFacingError, "could not decode access token expiry"):
+            account_services.import_omp_openai_account_data(
+                {"access_token": "access-1", "refresh_token": "refresh-1"},
+                "omp-exp",
+                omp_key="omp://openai",
+                from_omp_import_format=lambda value: value,
+                write_account_file=lambda *args: "unused.json",
+                user_facing_error_cls=UserFacingError,
+            )
+
+    def test_append_omp_openai_account_data_merges_into_existing_saved_set(self):
+        persisted: list[tuple[str, dict]] = []
+
+        result = account_services.append_omp_openai_account_data(
+            [
+                {
+                    "access_token": "access-replaced",
+                    "refresh_token": "refresh-1-new",
+                    "account_id": "acct-1",
+                    "expires": 222,
+                },
+                {
+                    "access_token": "access-3",
+                    "refresh_token": "refresh-3",
+                    "account_id": "acct-3",
+                    "expires": 333,
+                },
+            ],
+            "team-set",
+            omp_key="omp://openai",
+            from_omp_import_format=lambda value: {
+                "type": "openai-codex",
+                "access_token": value["access_token"],
+                "refresh_token": value["refresh_token"],
+                "accountId": value["account_id"],
+                "expires": value["expires"],
+                "identity_key": f"account:{value['account_id']}",
+            },
+            load_saved_account_data=lambda name, expected_kind=None: (
+                "team-set.json",
+                {
+                    "name": "team-set",
+                    "kind": "omp",
+                    "ext": "omp-openai",
+                    "refresh_status": "error",
+                    "entries": [
+                        {
+                            "key": "omp://openai",
+                            "value": {
+                                "type": "openai-codex",
+                                "access_token": "access-1-old",
+                                "refresh_token": "refresh-1-old",
+                                "accountId": "acct-1",
+                                "expires": 111,
+                                "identity_key": "account:acct-1",
+                            },
+                        },
+                        {
+                            "key": "omp://openai",
+                            "value": {
+                                "type": "openai-codex",
+                                "access_token": "access-2",
+                                "refresh_token": "refresh-2",
+                                "accountId": "acct-2",
+                                "expires": 222,
+                                "identity_key": "account:acct-2",
+                            },
+                        },
+                    ],
+                },
+                "omp",
+            ),
+            write_saved_account_data=lambda path, data: persisted.append((path, data)),
+            user_facing_error_cls=UserFacingError,
+        )
+
+        self.assertEqual(result.path, "team-set.json")
+        self.assertEqual(result.ext_label, "omp-openai")
+        self.assertEqual(len(result.entries), 3)
+        self.assertEqual([entry["value"]["accountId"] for entry in result.entries], ["acct-2", "acct-1", "acct-3"])
+        self.assertEqual(len(persisted), 1)
+        self.assertEqual(persisted[0][0], "team-set.json")
+        self.assertEqual(persisted[0][1]["name"], "team-set")
+        self.assertNotIn("refresh_status", persisted[0][1])
+
+        with self.assertRaisesRegex(UserFacingError, "invalid entries payload"):
+            account_services.append_omp_openai_account_data(
+                {"access_token": "access-1", "refresh_token": "refresh-1", "account_id": "acct-1", "expires": 111},
+                "broken",
+                omp_key="omp://openai",
+                from_omp_import_format=lambda value: {
+                    "type": "openai-codex",
+                    "access_token": value["access_token"],
+                    "refresh_token": value["refresh_token"],
+                    "accountId": value["account_id"],
+                    "expires": value["expires"],
+                },
+                load_saved_account_data=lambda name, expected_kind=None: ("broken.json", {"entries": "bad"}, "omp"),
+                write_saved_account_data=lambda path, data: None,
+                user_facing_error_cls=UserFacingError,
+            )
+
     def test_refresh_saved_account_rejects_invalid_entries_payload(self):
         with self.assertRaisesRegex(ValueError, "invalid entries payload"):
             account_services.refresh_saved_account(
