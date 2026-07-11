@@ -290,7 +290,7 @@ class ParseVscdbTests(unittest.TestCase):
             with self.assertRaisesRegex(db.AccountKindMismatchError, "expected 'ide'"):
                 db.delete_saved_account("alice", expected_kind="ide")
 
-        delete_saved.assert_called_once_with(str(accounts_dir), "alice", db.CODEX_KEY, "ide")
+        delete_saved.assert_called_once_with(str(accounts_dir), "alice", db.SPECIAL_KIND_KEYS, "ide")
 
     def test_rename_saved_account_maps_value_errors_to_user_facing_error(self):
         accounts_dir = self.root / "accounts"
@@ -304,7 +304,7 @@ class ParseVscdbTests(unittest.TestCase):
             with self.assertRaisesRegex(db.UserFacingError, "invalid characters"):
                 db.rename_saved_account("alice", "bad/name", expected_kind="ide")
 
-        rename_saved.assert_called_once_with(str(accounts_dir), db.CODEX_KEY, "alice", "bad/name", "ide")
+        rename_saved.assert_called_once_with(str(accounts_dir), db.SPECIAL_KIND_KEYS, "alice", "bad/name", "ide")
 
     def test_refresh_saved_account_passes_expected_kind_to_loader(self):
         captured: dict[str, str] = {}
@@ -326,6 +326,31 @@ class ParseVscdbTests(unittest.TestCase):
         self.assertEqual(result, "ok")
         self.assertEqual(captured, {"name": "alice", "expected_kind": "ide"})
         refresh_saved.assert_called_once()
+
+    def test_save_and_use_omp_openai_account_delegate_to_account_services(self):
+        with patch.object(db.account_services, "save_omp_openai_account") as save_omp_openai_account:
+            db.save_omp_openai_account("alice")
+
+        save_omp_openai_account.assert_called_once_with(
+            "alice",
+            omp_key=db.OMP_OPENAI_KEY,
+            read_omp_openai_entries=db._read_current_omp_openai_entries,
+            write_account_file=db._write_account_file,
+            user_facing_error_cls=db.UserFacingError,
+        )
+
+        with patch.object(db.account_services, "use_omp_openai_account") as use_omp_openai_account:
+            db.use_omp_openai_account("alice")
+
+        use_omp_openai_account.assert_called_once_with(
+            "alice",
+            load_saved_account_data=db._load_saved_account_data,
+            omp_key=db.OMP_OPENAI_KEY,
+            create_prewrite_backup=db.create_prewrite_backup,
+            replace_omp_openai_credentials=db._replace_omp_openai_credentials,
+            omp_agent_db_path=db.OMP_AGENT_DB_PATH,
+            user_facing_error_cls=db.UserFacingError,
+        )
 
 
 if __name__ == "__main__":

@@ -127,6 +127,57 @@ class AccountServicesModuleTests(TempDirTestCase):
                 user_facing_error_cls=UserFacingError,
             )
 
+    def test_save_omp_openai_account_requires_live_credentials_and_preserves_entries(self):
+        with self.assertRaisesRegex(UserFacingError, "No active OMP OpenAI credentials"):
+            account_services.save_omp_openai_account(
+                "alice",
+                omp_key="omp://openai",
+                read_omp_openai_entries=lambda: [],
+                write_account_file=lambda *args: "unused.json",
+                user_facing_error_cls=UserFacingError,
+            )
+
+        result = account_services.save_omp_openai_account(
+            "alice",
+            omp_key="omp://openai",
+            read_omp_openai_entries=lambda: [
+                {
+                    "key": "omp://openai",
+                    "identity_key": "email:alice@example.com",
+                    "value": {
+                        "type": "openai-codex",
+                        "access_token": "access-1",
+                        "refresh_token": "refresh-1",
+                        "expires": 123,
+                        "accountId": "acct-1",
+                        "email": "alice@example.com",
+                    },
+                }
+            ],
+            write_account_file=lambda name, kind, ext_label, entries: "alice.json",
+            user_facing_error_cls=UserFacingError,
+        )
+
+        self.assertEqual(result.path, "alice.json")
+        self.assertEqual(result.ext_label, "omp-openai")
+        self.assertEqual(
+            result.entries,
+            [
+                {
+                    "key": "omp://openai",
+                    "identity_key": "email:alice@example.com",
+                    "value": {
+                        "type": "openai-codex",
+                        "access_token": "access-1",
+                        "refresh_token": "refresh-1",
+                        "expires": 123,
+                        "accountId": "acct-1",
+                        "email": "alice@example.com",
+                    },
+                }
+            ],
+        )
+
     def test_refresh_saved_account_rejects_invalid_entries_payload(self):
         with self.assertRaisesRegex(ValueError, "invalid entries payload"):
             account_services.refresh_saved_account(
@@ -648,6 +699,74 @@ class AccountServicesModuleTests(TempDirTestCase):
                 },
                 write_account_file=lambda *args: "unused.json",
                 user_facing_error_cls=UserFacingError,
+            )
+
+    def test_use_omp_openai_account_applies_full_saved_set(self):
+        backups: list[dict[str, object]] = []
+        replaced_entries: list[list[dict]] = []
+        messages: list[str] = []
+
+        account_services.use_omp_openai_account(
+            "alice",
+            load_saved_account_data=lambda name, expected_kind=None: (
+                "omp.json",
+                {
+                    "entries": [
+                        {
+                            "key": "omp://openai",
+                            "identity_key": "email:alice@example.com",
+                            "value": {
+                                "type": "openai-codex",
+                                "access_token": "access-1",
+                                "refresh_token": "refresh-1",
+                                "expires": 123,
+                                "accountId": "acct-1",
+                            },
+                        },
+                        {
+                            "key": "omp://openai",
+                            "value": {
+                                "type": "openai-codex",
+                                "access_token": "access-2",
+                                "refresh_token": "refresh-2",
+                                "expires": 456,
+                                "accountId": "acct-2",
+                            },
+                        },
+                    ]
+                },
+                "omp",
+            ),
+            omp_key="omp://openai",
+            create_prewrite_backup=lambda **kwargs: backups.append(kwargs),
+            replace_omp_openai_credentials=lambda entries: replaced_entries.append(list(entries)),
+            omp_agent_db_path="C:/Users/Test/.omp/agent/agent.db",
+            user_facing_error_cls=UserFacingError,
+            print_fn=messages.append,
+        )
+
+        self.assertEqual(
+            backups,
+            [{"include_omp": True, "note": "before applying OMP OpenAI account 'alice'"}],
+        )
+        self.assertEqual(len(replaced_entries), 1)
+        self.assertEqual(len(replaced_entries[0]), 2)
+        self.assertEqual(messages[-3:], [
+            "[omp-openai] Written to C:/Users/Test/.omp/agent/agent.db",
+            "  credentials: 2",
+            "  accountIds: acct-1, acct-2",
+        ])
+
+        with self.assertRaisesRegex(UserFacingError, "does not contain any OMP OpenAI entries"):
+            account_services.use_omp_openai_account(
+                "alice",
+                load_saved_account_data=lambda name, expected_kind=None: ("omp.json", {"entries": []}, "omp"),
+                omp_key="omp://openai",
+                create_prewrite_backup=lambda **kwargs: None,
+                replace_omp_openai_credentials=lambda entries: None,
+                omp_agent_db_path="C:/Users/Test/.omp/agent/agent.db",
+                user_facing_error_cls=UserFacingError,
+                print_fn=lambda msg: None,
             )
 
     def test_import_ide_account_data_writes_selected_ide_entries(self):

@@ -150,19 +150,32 @@ def write_saved_account_batch(updates: Mapping[str, dict] | Sequence[tuple[str, 
                 pass
 
 
-def saved_account_kind(data: dict, codex_key: str) -> str:
+def _normalize_kind_keys(kind_keys: str | Mapping[str, str] | None) -> dict[str, str]:
+    if isinstance(kind_keys, str):
+        return {"codex": kind_keys}
+    if not isinstance(kind_keys, Mapping):
+        return {}
+    normalized: dict[str, str] = {}
+    for kind, key in kind_keys.items():
+        if isinstance(kind, str) and kind and isinstance(key, str) and key:
+            normalized[kind] = key
+    return normalized
+
+
+def saved_account_kind(data: dict, kind_keys: str | Mapping[str, str] | None) -> str:
     kind = data.get("kind") if isinstance(data, dict) else None
-    if kind in {"ide", "codex"}:
+    if kind in {"ide", "codex", "omp"}:
         return kind
 
     entries = data.get("entries", []) if isinstance(data, dict) else []
     keys = [entry.get("key") for entry in entries if isinstance(entry, dict)]
-    if keys and all(key == codex_key for key in keys):
-        return "codex"
+    for candidate_kind, candidate_key in _normalize_kind_keys(kind_keys).items():
+        if keys and all(key == candidate_key for key in keys):
+            return candidate_kind
     return "ide"
 
 
-def list_saved_accounts(accounts_dir: str, codex_key: str, kind: str | None = None) -> list[dict]:
+def list_saved_accounts(accounts_dir: str, kind_keys: str | Mapping[str, str] | None, kind: str | None = None) -> list[dict]:
     records = []
     base_dir = ensure_accounts_dir(accounts_dir)
     for filename in sorted(f for f in os.listdir(base_dir) if f.endswith(".json")):
@@ -171,7 +184,7 @@ def list_saved_accounts(accounts_dir: str, codex_key: str, kind: str | None = No
         try:
             with open(path, encoding="utf-8") as fh:
                 data = json.load(fh)
-            account_kind = saved_account_kind(data, codex_key)
+            account_kind = saved_account_kind(data, kind_keys)
             if kind and account_kind != kind:
                 continue
             records.append({
@@ -214,7 +227,12 @@ def resolve_existing_account_path(accounts_dir: str, name: str) -> str:
     return exact_path
 
 
-def load_saved_account(accounts_dir: str, name: str, codex_key: str, expected_kind: str | None = None) -> tuple[str, dict, str]:
+def load_saved_account(
+    accounts_dir: str,
+    name: str,
+    kind_keys: str | Mapping[str, str] | None,
+    expected_kind: str | None = None,
+) -> tuple[str, dict, str]:
     path = resolve_existing_account_path(accounts_dir, name)
     if not os.path.exists(path):
         raise FileNotFoundError(name)
@@ -222,7 +240,7 @@ def load_saved_account(accounts_dir: str, name: str, codex_key: str, expected_ki
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    kind = saved_account_kind(data, codex_key)
+    kind = saved_account_kind(data, kind_keys)
     if expected_kind and kind != expected_kind:
         raise SavedAccountKindMismatchError(kind)
     return path, data, kind
@@ -230,7 +248,7 @@ def load_saved_account(accounts_dir: str, name: str, codex_key: str, expected_ki
 
 def rename_saved_account(
     accounts_dir: str,
-    codex_key: str,
+    kind_keys: str | Mapping[str, str] | None,
     name: str,
     new_name: str,
     expected_kind: str | None = None,
@@ -242,7 +260,7 @@ def rename_saved_account(
         raise FileNotFoundError(name)
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    kind = saved_account_kind(data, codex_key)
+    kind = saved_account_kind(data, kind_keys)
     if expected_kind and kind != expected_kind:
         raise SavedAccountKindMismatchError(kind)
 
@@ -251,7 +269,7 @@ def rename_saved_account(
         try:
             with open(new_path, "r", encoding="utf-8") as fh:
                 existing = json.load(fh)
-            existing_kind = saved_account_kind(existing, codex_key)
+            existing_kind = saved_account_kind(existing, kind_keys)
         except Exception as exc:
             raise ValueError(f"Cannot overwrite unreadable account file '{normalized_new_name}.json': {exc}") from exc
         raise ValueError(
@@ -281,7 +299,7 @@ def rename_saved_account(
 def delete_saved_account(
     accounts_dir: str,
     name: str,
-    codex_key: str | None = None,
+    kind_keys: str | Mapping[str, str] | None = None,
     expected_kind: str | None = None,
 ) -> None:
     path = resolve_existing_account_path(accounts_dir, name)
@@ -289,11 +307,11 @@ def delete_saved_account(
         raise FileNotFoundError(name)
 
     if expected_kind:
-        if not codex_key:
-            raise ValueError("codex_key is required when expected_kind is provided.")
+        if not kind_keys:
+            raise ValueError("kind_keys is required when expected_kind is provided.")
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        kind = saved_account_kind(data, codex_key)
+        kind = saved_account_kind(data, kind_keys)
         if kind != expected_kind:
             raise SavedAccountKindMismatchError(kind)
 
@@ -302,7 +320,7 @@ def delete_saved_account(
 
 def write_account_file(
     accounts_dir: str,
-    codex_key: str,
+    kind_keys: str | Mapping[str, str] | None,
     name: str,
     kind: str,
     ext_label: str,
@@ -313,7 +331,7 @@ def write_account_file(
         try:
             with open(out, encoding="utf-8") as f:
                 existing = json.load(f)
-            existing_kind = saved_account_kind(existing, codex_key)
+            existing_kind = saved_account_kind(existing, kind_keys)
         except Exception as exc:
             raise ValueError(f"Cannot overwrite unreadable account file '{name}.json': {exc}") from exc
         if existing_kind != kind:

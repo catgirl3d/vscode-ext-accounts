@@ -48,6 +48,43 @@ class BackupsModuleTests(unittest.TestCase):
             ],
         )
 
+    def test_prewrite_backup_targets_include_omp_db_and_wal_sidecars(self):
+        targets = backups.prewrite_backup_targets(
+            {"vscode": {"label": "VSCode", "db": "db.vscdb", "local_state": "Local State"}},
+            "vscode",
+            "kilo/auth.json",
+            "codex/auth.json",
+            "omp/agent.db",
+            include_db=False,
+            include_kilo=False,
+            include_codex=False,
+            include_omp=True,
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                {
+                    "source": "omp/agent.db",
+                    "archive_path": "prewrite/shared/omp/agent.db",
+                    "label": "OMP agent.db",
+                    "required": False,
+                },
+                {
+                    "source": "omp/agent.db-wal",
+                    "archive_path": "prewrite/shared/omp/agent.db-wal",
+                    "label": "OMP agent.db-wal",
+                    "required": False,
+                },
+                {
+                    "source": "omp/agent.db-shm",
+                    "archive_path": "prewrite/shared/omp/agent.db-shm",
+                    "label": "OMP agent.db-shm",
+                    "required": False,
+                },
+            ],
+        )
+
     def test_create_backup_archive_appends_zip_extension_and_rejects_empty_targets(self):
         source = self.root / "source.txt"
         self.write_text(source, "backup me")

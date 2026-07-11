@@ -260,6 +260,31 @@ def save_codex_account(
     )
 
 
+def save_omp_openai_account(
+    name: str,
+    *,
+    omp_key: str,
+    read_omp_openai_entries,
+    write_account_file,
+    user_facing_error_cls,
+) -> SavedAccountWriteResult:
+    try:
+        entries = list(read_omp_openai_entries())
+    except ValueError as exc:
+        raise user_facing_error_cls(f"ERROR: {exc}") from exc
+    if not entries:
+        raise user_facing_error_cls("No active OMP OpenAI credentials found in agent.db.")
+
+    return _build_saved_account_write_result(
+        name,
+        "omp",
+        "omp-openai",
+        [{"key": omp_key, **{k: v for k, v in entry.items() if k != "key"}} for entry in entries],
+        write_account_file=write_account_file,
+        user_facing_error_cls=user_facing_error_cls,
+    )
+
+
 def refresh_saved_account(
     name: str,
     *,
@@ -471,6 +496,41 @@ def use_codex_account(
     write_codex_auth(codex_auth)
     print_fn(f"[codex] Written to {codex_auth_path}")
     print_fn(f"  accountId: {codex_auth.get('tokens', {}).get('account_id', '?')}")
+
+
+def use_omp_openai_account(
+    name: str,
+    *,
+    load_saved_account_data,
+    omp_key: str,
+    create_prewrite_backup,
+    replace_omp_openai_credentials,
+    omp_agent_db_path: str,
+    user_facing_error_cls,
+    print_fn: Callable[[str], None] = print,
+) -> None:
+    _path, account_data, _kind = load_saved_account_data(name, expected_kind="omp")
+    raw_entries = account_data.get("entries", []) if isinstance(account_data, dict) else []
+    entries = [entry for entry in raw_entries if isinstance(entry, dict) and entry.get("key") == omp_key]
+    if not entries:
+        raise user_facing_error_cls(f"Account '{name}' does not contain any OMP OpenAI entries.")
+
+    create_prewrite_backup(include_omp=True, note=f"before applying OMP OpenAI account '{name}'")
+    print_fn("")
+
+    try:
+        replace_omp_openai_credentials(entries)
+    except ValueError as exc:
+        raise user_facing_error_cls(f"ERROR: {exc}") from exc
+    account_ids = [
+        str(entry.get("value", {}).get("accountId", "?"))
+        for entry in entries
+        if isinstance(entry.get("value"), Mapping)
+    ]
+    print_fn(f"[omp-openai] Written to {omp_agent_db_path}")
+    print_fn(f"  credentials: {len(entries)}")
+    if account_ids:
+        print_fn(f"  accountIds: {', '.join(account_ids)}")
 
 
 def import_codex_account(

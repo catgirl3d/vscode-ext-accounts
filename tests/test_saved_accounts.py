@@ -214,35 +214,45 @@ class SavedAccountsTests(TempDirTestCase):
 
 class SavedAccountsModuleTests(TempDirTestCase):
     codex_key = "codex://auth"
+    omp_key = "omp://openai"
 
     def test_saved_account_kind_listing_and_filters(self):
         accounts_dir = self.root / "accounts"
         self.write_json(accounts_dir / "ide.json", {"kind": "ide", "entries": [{"key": "secret://ide", "value": {}}]})
         self.write_json(accounts_dir / "codex.json", {"entries": [{"key": self.codex_key, "value": {}}]})
+        self.write_json(accounts_dir / "omp.json", {"entries": [{"key": self.omp_key, "value": {}}]})
         self.write_text(accounts_dir / "broken.json", "{")
+        kind_keys = {"codex": self.codex_key, "omp": self.omp_key}
 
         self.assertEqual(saved_accounts.saved_account_kind({"kind": "codex"}, self.codex_key), "codex")
         self.assertEqual(saved_accounts.saved_account_kind({"entries": [{"key": self.codex_key}]}, self.codex_key), "codex")
+        self.assertEqual(saved_accounts.saved_account_kind({"entries": [{"key": self.omp_key}]}, kind_keys), "omp")
         self.assertEqual(saved_accounts.saved_account_kind({"entries": [{"key": "other"}]}, self.codex_key), "ide")
 
-        records = saved_accounts.list_saved_accounts(str(accounts_dir), self.codex_key)
+        records = saved_accounts.list_saved_accounts(str(accounts_dir), kind_keys)
         by_name = {record["name"]: record for record in records}
 
         self.assertTrue(by_name["ide"]["readable"])
         self.assertEqual(by_name["ide"]["kind"], "ide")
         self.assertTrue(by_name["codex"]["readable"])
         self.assertEqual(by_name["codex"]["kind"], "codex")
+        self.assertTrue(by_name["omp"]["readable"])
+        self.assertEqual(by_name["omp"]["kind"], "omp")
         self.assertFalse(by_name["broken"]["readable"])
         self.assertIsNone(by_name["broken"]["kind"])
         self.assertIsNone(by_name["broken"]["data"])
 
         self.assertEqual(
-            [record["name"] for record in saved_accounts.list_saved_accounts(str(accounts_dir), self.codex_key, kind="ide")],
+            [record["name"] for record in saved_accounts.list_saved_accounts(str(accounts_dir), kind_keys, kind="ide")],
             ["ide"],
         )
         self.assertEqual(
-            [record["name"] for record in saved_accounts.list_saved_accounts(str(accounts_dir), self.codex_key, kind="codex")],
+            [record["name"] for record in saved_accounts.list_saved_accounts(str(accounts_dir), kind_keys, kind="codex")],
             ["codex"],
+        )
+        self.assertEqual(
+            [record["name"] for record in saved_accounts.list_saved_accounts(str(accounts_dir), kind_keys, kind="omp")],
+            ["omp"],
         )
 
     def test_load_saved_account_and_write_account_file_validate_kinds(self):

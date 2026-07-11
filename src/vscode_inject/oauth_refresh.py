@@ -22,6 +22,7 @@ OPENAI_CODEX_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
 OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 KILO_NEW_KEY = "kilo-new://openai"
 CODEX_KEY = "codex://openai"
+OMP_OPENAI_KEY = "omp://openai"
 DEFAULT_EXPIRES_IN_SECONDS = 3600
 AUTO_REFRESH_DISABLED_GROUPS_KEY = "auto_refresh_disabled_groups"
 TERMINAL_REFRESH_ERROR_CODES = {
@@ -422,7 +423,7 @@ def refresh_openai_codex_bundle(
 
 
 def _entry_uses_openai_codex_key(entry_key: str) -> bool:
-    if entry_key in {KILO_NEW_KEY, CODEX_KEY}:
+    if entry_key in {KILO_NEW_KEY, CODEX_KEY, OMP_OPENAI_KEY}:
         return True
     if not entry_key.startswith("secret://"):
         return False

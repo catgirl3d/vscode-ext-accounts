@@ -196,6 +196,7 @@ class GuiAppPollingTests(unittest.TestCase):
         
         mock_ide_tab = Mock()
         mock_codex_tab = Mock()
+        mock_omp_tab = Mock()
         
         class InlineThread:
             def __init__(self, target=None, daemon=None):
@@ -211,15 +212,17 @@ class GuiAppPollingTests(unittest.TestCase):
              patch("vscode_inject.gui_app.ttk.Style"), \
              patch("vscode_inject.gui_app.IdeAccountsTab", return_value=mock_ide_tab) as mock_ide_ctr, \
              patch("vscode_inject.gui_app.CodexTab", return_value=mock_codex_tab) as mock_codex_ctr, \
+             patch("vscode_inject.gui_app.OmpOpenAITab", return_value=mock_omp_tab) as mock_omp_ctr, \
              patch("vscode_inject.gui_app.threading.Thread", InlineThread):
-             
+
              gui_app.main()
-             
+
              # Check that main initialized the tabs and scheduler
              mock_ide_ctr.assert_called_once()
              mock_codex_ctr.assert_called_once()
+             mock_omp_ctr.assert_called_once()
              mock_scheduler_class.assert_called_once()
-             
+
              # Check that loops are scheduled
              self.assertIn("process_ui_queue", after_calls)
              self.assertIn("process_auto_refresh_queue", after_calls)
@@ -235,10 +238,11 @@ class GuiAppPollingTests(unittest.TestCase):
              # Call process_ui_queue_func to drain the ui_queue and refresh tabs
              process_ui_queue_func = after_calls["process_ui_queue"][0]
              process_ui_queue_func()
-             
+
              # Verify state
              mock_ide_tab.refresh.assert_called()
              mock_codex_tab.refresh.assert_called()
+             mock_omp_tab.refresh.assert_called()
 
              # We can test process_auto_refresh_queue similarly.
              request_auto_refresh_func = after_calls["request_auto_refresh"][0]

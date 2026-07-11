@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 from vscode_inject import gui_tabs
-from vscode_inject.gui_tabs import CodexTab, EXPIRED_ROW_TAG, GuiServices, IdeAccountsTab
+from vscode_inject.gui_tabs import CodexTab, EXPIRED_ROW_TAG, GuiServices, IdeAccountsTab, OmpOpenAITab
 from vscode_inject import parse_vscdb as db
 
 
@@ -814,6 +814,114 @@ class IdeAccountsTabTests(unittest.TestCase):
         showerror.assert_called_once_with("Run IDE", "launch failed")
         services.set_status.assert_called_once_with("launch failed", False)
         refresh.assert_not_called()
+
+
+class OmpOpenAITabTests(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(str(exc))
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+
+    def make_db(self):
+        save_omp_openai_account = Mock(name="save_omp_openai_account")
+        use_omp_openai_account = Mock(name="use_omp_openai_account")
+        refresh_saved_account = Mock(name="refresh_saved_account")
+        rename_saved_account = Mock(name="rename_saved_account")
+
+        current_accounts = [
+            {
+                "key": "omp://openai",
+                "accountId": "acct-omp-1234567890",
+                "fingerprint": "refresh-omp",
+                "expires": 123,
+            }
+        ]
+        saved_records = [
+            {
+                "name": "alice",
+                "kind": "omp",
+                "readable": True,
+                "data": {
+                    "entries": [
+                        {
+                            "key": "omp://openai",
+                            "value": {
+                                "type": "openai-codex",
+                                "accountId": "acct-omp-1234567890",
+                                "refresh_token": "refresh-omp",
+                                "expires": 123,
+                            },
+                        }
+                    ]
+                },
+            }
+        ]
+
+        return SimpleNamespace(
+            OMP_AGENT_DB_PATH="C:/Users/Test/.omp/agent/agent.db",
+            OMP_OPENAI_KEY="omp://openai",
+            account_fingerprint=lambda value: value.get("refresh_token") if isinstance(value, dict) else None,
+            read_current_omp_openai_accounts=lambda: list(current_accounts),
+            list_saved_accounts=lambda kind: list(saved_records) if kind == "omp" else [],
+            save_omp_openai_account=save_omp_openai_account,
+            use_omp_openai_account=use_omp_openai_account,
+            refresh_saved_account=refresh_saved_account,
+            rename_saved_account=rename_saved_account,
+            delete_saved_account=Mock(name="delete_saved_account"),
+        )
+
+    def make_services(self, db_module):
+        return GuiServices(
+            root=self.root,
+            db=db_module,
+            bg="#1e1e2e",
+            fg="#cdd6f4",
+            btn_bg="#313244",
+            btn_act="#45475a",
+            sel_fg="#1e1e2e",
+            run_guarded=Mock(),
+            set_status=lambda *args, **kwargs: None,
+        )
+
+    def test_omp_tab_renders_and_marks_matching_profile_active(self):
+        notebook = ttk.Notebook(self.root)
+        services = self.make_services(self.make_db())
+        tab = OmpOpenAITab(notebook, services)
+
+        tab.refresh()
+
+        row_values = tab.tree.item("alice", "values")
+        self.assertEqual(row_values[0], "alice")
+        self.assertEqual(row_values[4], "active")
+        self.assertEqual(tab.current_value.cget("text"), "acct-omp...")
+
+    def test_omp_tab_actions_call_backend_contracts(self):
+        notebook = ttk.Notebook(self.root)
+        db_module = self.make_db()
+        services = self.make_services(db_module)
+        tab = OmpOpenAITab(notebook, services)
+
+        with patch("vscode_inject.gui_tabs.ask_account_name", return_value="saved-omp"):
+            tab.on_save()
+        services.run_guarded.assert_called_once_with(
+            db_module.save_omp_openai_account,
+            "saved-omp",
+            success_msg="Saved OMP OpenAI account 'saved-omp'",
+        )
+
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
+        ):
+            tab.on_use()
+        services.run_guarded.assert_called_once_with(
+            db_module.use_omp_openai_account,
+            "alice",
+            success_msg="Switched OMP OpenAI to 'alice'",
+        )
 
 
 class CodexTabTests(unittest.TestCase):

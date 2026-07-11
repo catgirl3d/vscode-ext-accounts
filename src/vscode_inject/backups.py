@@ -30,6 +30,7 @@ def full_backup_targets(
     current_ide: str,
     kilo_auth_path: str,
     codex_auth_path: str,
+    omp_agent_db_path: str | None = None,
 ) -> list[dict[str, object]]:
     targets: list[dict[str, object]] = []
     for ide_name, cfg in ide_paths.items():
@@ -68,6 +69,29 @@ def full_backup_targets(
             "required": False,
         }
     )
+    if omp_agent_db_path:
+        targets.extend(
+            [
+                {
+                    "source": omp_agent_db_path,
+                    "archive_path": "shared/omp/agent.db",
+                    "label": "OMP agent.db",
+                    "required": False,
+                },
+                {
+                    "source": omp_agent_db_path + "-wal",
+                    "archive_path": "shared/omp/agent.db-wal",
+                    "label": "OMP agent.db-wal",
+                    "required": False,
+                },
+                {
+                    "source": omp_agent_db_path + "-shm",
+                    "archive_path": "shared/omp/agent.db-shm",
+                    "label": "OMP agent.db-shm",
+                    "required": False,
+                },
+            ]
+        )
     return targets
 
 
@@ -76,10 +100,12 @@ def prewrite_backup_targets(
     current_ide: str,
     kilo_auth_path: str,
     codex_auth_path: str,
+    omp_agent_db_path: str | None = None,
     *,
     include_db: bool,
     include_kilo: bool,
     include_codex: bool,
+    include_omp: bool = False,
 ) -> list[dict[str, object]]:
     targets: list[dict[str, object]] = []
     if include_db:
@@ -118,6 +144,29 @@ def prewrite_backup_targets(
                 "label": "Codex auth.json",
                 "required": False,
             }
+        )
+    if include_omp and omp_agent_db_path:
+        targets.extend(
+            [
+                {
+                    "source": omp_agent_db_path,
+                    "archive_path": "prewrite/shared/omp/agent.db",
+                    "label": "OMP agent.db",
+                    "required": False,
+                },
+                {
+                    "source": omp_agent_db_path + "-wal",
+                    "archive_path": "prewrite/shared/omp/agent.db-wal",
+                    "label": "OMP agent.db-wal",
+                    "required": False,
+                },
+                {
+                    "source": omp_agent_db_path + "-shm",
+                    "archive_path": "prewrite/shared/omp/agent.db-shm",
+                    "label": "OMP agent.db-shm",
+                    "required": False,
+                },
+            ]
         )
     return targets
 

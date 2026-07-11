@@ -17,6 +17,7 @@ from . import backups
 from . import codex_accounts as codex_store
 from . import ide_context
 from . import kilo_new_accounts
+from . import omp_openai_accounts as omp_store
 from . import oauth_refresh
 from . import saved_accounts as saved_store
 from . import state_db
@@ -165,18 +166,20 @@ def _default_backup_zip_path(prefix: str) -> str:
 
 
 def _full_backup_targets() -> list[dict[str, object]]:
-    return backups.full_backup_targets(IDE_PATHS, CURRENT_IDE, KILO_AUTH_PATH, CODEX_AUTH_PATH)
+    return backups.full_backup_targets(IDE_PATHS, CURRENT_IDE, KILO_AUTH_PATH, CODEX_AUTH_PATH, OMP_AGENT_DB_PATH)
 
 
-def _prewrite_backup_targets(*, include_db: bool, include_kilo: bool, include_codex: bool) -> list[dict[str, object]]:
+def _prewrite_backup_targets(*, include_db: bool, include_kilo: bool, include_codex: bool, include_omp: bool = False) -> list[dict[str, object]]:
     return backups.prewrite_backup_targets(
         IDE_PATHS,
         CURRENT_IDE,
         KILO_AUTH_PATH,
         CODEX_AUTH_PATH,
+        OMP_AGENT_DB_PATH,
         include_db=include_db,
         include_kilo=include_kilo,
         include_codex=include_codex,
+        include_omp=include_omp,
     )
 
 
@@ -199,8 +202,20 @@ def _create_backup_archive(
     )
 
 
-def create_prewrite_backup(*, include_db: bool = False, include_kilo: bool = False, include_codex: bool = False, note: str | None = None) -> dict | None:
-    targets = _prewrite_backup_targets(include_db=include_db, include_kilo=include_kilo, include_codex=include_codex)
+def create_prewrite_backup(
+    *,
+    include_db: bool = False,
+    include_kilo: bool = False,
+    include_codex: bool = False,
+    include_omp: bool = False,
+    note: str | None = None,
+) -> dict | None:
+    targets = _prewrite_backup_targets(
+        include_db=include_db,
+        include_kilo=include_kilo,
+        include_codex=include_codex,
+        include_omp=include_omp,
+    )
     if not targets:
         return None
 
@@ -313,6 +328,9 @@ KILO_AUTH_PATH = os.path.join(os.path.expanduser("~"), ".local", "share", "kilo"
 KILO_NEW_KEY = "kilo-new://openai"
 CODEX_AUTH_PATH = os.path.join(os.path.expanduser("~"), ".codex", "auth.json")
 CODEX_KEY = "codex://openai"
+OMP_AGENT_DB_PATH = os.path.join(os.path.expanduser("~"), ".omp", "agent", "agent.db")
+OMP_OPENAI_KEY = oauth_refresh.OMP_OPENAI_KEY
+SPECIAL_KIND_KEYS = {"codex": CODEX_KEY, "omp": OMP_OPENAI_KEY}
 
 IDE_EXTENSIONS = {
     "both": None,
@@ -350,11 +368,11 @@ def _normalize_ide_ext_selection(ext: str | list[str] | tuple[str, ...] | None) 
 
 
 def saved_account_kind(data: dict) -> str:
-    return saved_store.saved_account_kind(data, CODEX_KEY)
+    return saved_store.saved_account_kind(data, SPECIAL_KIND_KEYS)
 
 
 def list_saved_accounts(kind: str | None = None) -> list[dict]:
-    return saved_store.list_saved_accounts(_accounts_dir(), CODEX_KEY, kind)
+    return saved_store.list_saved_accounts(_accounts_dir(), SPECIAL_KIND_KEYS, kind)
 
 
 def write_saved_account_batch(updates: dict[str, dict] | list[tuple[str, dict]]) -> None:
@@ -495,6 +513,22 @@ def _from_kilo_new_format(value: dict) -> dict:
     return kilo_new_accounts.from_kilo_new_format(value)
 
 
+def _read_current_omp_openai_entries() -> list[dict]:
+    return omp_store.read_current_openai_entries(OMP_AGENT_DB_PATH, OMP_OPENAI_KEY)
+
+
+def read_current_omp_openai_accounts() -> list[dict]:
+    return omp_store.read_current_openai_accounts(
+        OMP_AGENT_DB_PATH,
+        OMP_OPENAI_KEY,
+        account_fingerprint,
+    )
+
+
+def _replace_omp_openai_credentials(entries: Sequence[Mapping[str, object]]) -> None:
+    omp_store.replace_openai_credentials(OMP_AGENT_DB_PATH, entries)
+
+
 def get_kilo_new_fingerprint() -> str | None:
     return kilo_new_accounts.get_kilo_new_fingerprint(KILO_AUTH_PATH)
 
@@ -570,7 +604,7 @@ def _run_saved_account_store_call(
 def _load_saved_account_data(name: str, expected_kind: str | None = None) -> tuple[str, dict, str]:
     return _run_saved_account_store_call(
         name,
-        lambda: saved_store.load_saved_account(_accounts_dir(), name, CODEX_KEY, expected_kind),
+        lambda: saved_store.load_saved_account(_accounts_dir(), name, SPECIAL_KIND_KEYS, expected_kind),
         expected_kind=expected_kind,
     )
 
@@ -578,7 +612,7 @@ def _load_saved_account_data(name: str, expected_kind: str | None = None) -> tup
 def rename_saved_account(name: str, new_name: str, expected_kind: str | None = None) -> str:
     _path, data, _kind = _run_saved_account_store_call(
         name,
-        lambda: saved_store.rename_saved_account(_accounts_dir(), CODEX_KEY, name, new_name, expected_kind),
+        lambda: saved_store.rename_saved_account(_accounts_dir(), SPECIAL_KIND_KEYS, name, new_name, expected_kind),
         expected_kind=expected_kind,
         use_lock=True,
         map_value_error=True,
@@ -589,7 +623,7 @@ def rename_saved_account(name: str, new_name: str, expected_kind: str | None = N
 def delete_saved_account(name: str, expected_kind: str | None = None) -> None:
     _run_saved_account_store_call(
         name,
-        lambda: saved_store.delete_saved_account(_accounts_dir(), name, CODEX_KEY, expected_kind),
+        lambda: saved_store.delete_saved_account(_accounts_dir(), name, SPECIAL_KIND_KEYS, expected_kind),
         expected_kind=expected_kind,
         use_lock=True,
         map_value_error=True,
@@ -623,7 +657,7 @@ def _read_current_ide_entries_for_selection(ext_names: list[str]) -> list[dict]:
 
 
 def _write_account_file(name: str, kind: str, ext_label: str, entries: list[dict]) -> str:
-    return saved_store.write_account_file(_accounts_dir(), CODEX_KEY, name, kind, ext_label, entries)
+    return saved_store.write_account_file(_accounts_dir(), SPECIAL_KIND_KEYS, name, kind, ext_label, entries)
 
 
 def _print_saved_entries(entries: list[dict]):
@@ -649,6 +683,18 @@ def save_codex_account(name: str):
         codex_key=CODEX_KEY,
         read_codex_auth=_read_codex_auth,
         from_codex_format=_from_codex_format,
+        write_account_file=_write_account_file,
+        user_facing_error_cls=UserFacingError,
+    )
+    print(f"Account '{name}' saved [{result.ext_label}] ->{result.path}")
+    _print_saved_entries(result.entries)
+
+
+def save_omp_openai_account(name: str):
+    result = account_services.save_omp_openai_account(
+        name,
+        omp_key=OMP_OPENAI_KEY,
+        read_omp_openai_entries=_read_current_omp_openai_entries,
         write_account_file=_write_account_file,
         user_facing_error_cls=UserFacingError,
     )
@@ -721,6 +767,18 @@ def use_codex_account(name: str):
         read_codex_auth=_read_codex_auth,
         write_codex_auth=_write_codex_auth,
         codex_auth_path=CODEX_AUTH_PATH,
+        user_facing_error_cls=UserFacingError,
+    )
+
+
+def use_omp_openai_account(name: str):
+    account_services.use_omp_openai_account(
+        name,
+        load_saved_account_data=_load_saved_account_data,
+        omp_key=OMP_OPENAI_KEY,
+        create_prewrite_backup=create_prewrite_backup,
+        replace_omp_openai_credentials=_replace_omp_openai_credentials,
+        omp_agent_db_path=OMP_AGENT_DB_PATH,
         user_facing_error_cls=UserFacingError,
     )
 

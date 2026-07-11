@@ -417,6 +417,7 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
         )
         self.patch_db("KILO_AUTH_PATH", str(kilo_auth))
         self.patch_db("CODEX_AUTH_PATH", str(codex_auth))
+        self.patch_db("OMP_AGENT_DB_PATH", str(self.root / "missing-omp" / "agent.db"))
 
         backups_dir = self.root / "backups"
 
@@ -483,11 +484,12 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
         )
         self.patch_db("KILO_AUTH_PATH", str(kilo_auth))
         self.patch_db("CODEX_AUTH_PATH", str(codex_auth))
+        self.patch_db("OMP_AGENT_DB_PATH", str(self.root / "missing-omp" / "agent.db"))
 
         backups_dir = self.root / "backups"
 
         message = db.backup()
-        self.assertIn("Full backup saved (2/4 files). Skipped 2 optional missing file(s).", message)
+        self.assertIn("Full backup saved (2/7 files). Skipped 5 optional missing file(s).", message)
 
         zip_files = list(backups_dir.glob("full_*.zip"))
         with zipfile.ZipFile(zip_files[0]) as zf:
@@ -516,6 +518,7 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
         )
         self.patch_db("KILO_AUTH_PATH", str(self.root / "missing-kilo.json"))
         self.patch_db("CODEX_AUTH_PATH", str(self.root / "missing-codex.json"))
+        self.patch_db("OMP_AGENT_DB_PATH", str(self.root / "missing-omp" / "agent.db"))
 
         with self.assertRaisesRegex(RuntimeError, "Backup failed: none of the target files exist"):
             db.backup()
@@ -1215,6 +1218,7 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
         self.patch_db("CURRENT_IDE", "vscode")
         self.patch_db("KILO_AUTH_PATH", "C:/Users/Test/.local/share/kilo/auth.json")
         self.patch_db("CODEX_AUTH_PATH", "C:/Users/Test/.codex/auth.json")
+        self.patch_db("OMP_AGENT_DB_PATH", "C:/Users/Test/.omp/agent/agent.db")
 
         with patch.object(db.backups, "backups_dir", return_value="backups") as backups_dir, patch.object(
             db.backups, "refresh_recovery_dir", return_value="recovery"
@@ -1240,8 +1244,8 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
             self.assertEqual(db.saved_account_kind({"entries": []}), "codex")
             self.assertEqual(db.list_saved_accounts("ide"), [{"name": "alice"}])
             db.write_saved_account_batch({"alice.json": {"entries": []}})
-            saved_account_kind.assert_called_once_with({"entries": []}, db.CODEX_KEY)
-            list_saved_accounts.assert_called_once_with(db._accounts_dir(), db.CODEX_KEY, "ide")
+            saved_account_kind.assert_called_once_with({"entries": []}, db.SPECIAL_KIND_KEYS)
+            list_saved_accounts.assert_called_once_with(db._accounts_dir(), db.SPECIAL_KIND_KEYS, "ide")
             write_saved_account_batch.assert_called_once_with({"alice.json": {"entries": []}})
 
         with patch.object(db.backups, "normalize_saved_account_updates", return_value=[("alice.json", {"entries": []})]) as normalize_updates, patch.object(
@@ -1294,7 +1298,18 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
             db.kilo_new_accounts, "from_kilo_new_format", return_value={"type": "openai-codex"}
         ) as from_kilo_new_format, patch.object(
             db.kilo_new_accounts, "read_current_kilo_new_account", return_value={db.KILO_NEW_KEY: {"accountId": "acct-kilo"}}
-        ) as read_current_kilo_new_account:
+        ) as read_current_kilo_new_account, patch.object(
+            db.omp_store,
+            "read_current_openai_entries",
+            return_value=[{"key": db.OMP_OPENAI_KEY, "value": {"accountId": "acct-omp"}}],
+        ) as read_current_openai_entries, patch.object(
+            db.omp_store,
+            "read_current_openai_accounts",
+            return_value=[{"key": db.OMP_OPENAI_KEY, "accountId": "acct-omp", "fingerprint": "fp-omp"}],
+        ) as read_current_openai_accounts, patch.object(
+            db.omp_store,
+            "replace_openai_credentials",
+        ) as replace_openai_credentials:
             self.assertEqual(db._read_codex_auth(), {"tokens": {}})
             db._write_codex_auth({"tokens": {"account_id": "acct-codex"}})
             self.assertEqual(db._to_codex_format({"accountId": "acct-codex"}), {"formatted": True})
@@ -1303,8 +1318,14 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
             db._write_kilo_auth({"openai": {"refresh": "refresh-1"}})
             self.assertEqual(db._to_kilo_new_format({"accountId": "acct-kilo"}), {"type": "oauth"})
             self.assertEqual(db._from_kilo_new_format({"openai": {}}), {"type": "openai-codex"})
+            self.assertEqual(db._read_current_omp_openai_entries(), [{"key": db.OMP_OPENAI_KEY, "value": {"accountId": "acct-omp"}}])
             self.assertEqual(db.read_current_codex_account(), {db.CODEX_KEY: {"accountId": "acct-codex"}})
             self.assertEqual(db.read_current_kilo_new_account(), {db.KILO_NEW_KEY: {"accountId": "acct-kilo"}})
+            self.assertEqual(
+                db.read_current_omp_openai_accounts(),
+                [{"key": db.OMP_OPENAI_KEY, "accountId": "acct-omp", "fingerprint": "fp-omp"}],
+            )
+            db._replace_omp_openai_credentials([{"key": db.OMP_OPENAI_KEY, "value": {"accountId": "acct-omp"}}])
             read_codex_auth.assert_called_once_with(db.CODEX_AUTH_PATH)
             write_codex_auth.assert_called_once_with(db.CODEX_AUTH_PATH, {"tokens": {"account_id": "acct-codex"}})
             to_codex_format.assert_called_once_with({"accountId": "acct-codex"}, None)
@@ -1313,6 +1334,12 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
             write_kilo_auth.assert_called_once_with(db.KILO_AUTH_PATH, {"openai": {"refresh": "refresh-1"}})
             to_kilo_new_format.assert_called_once_with({"accountId": "acct-kilo"})
             from_kilo_new_format.assert_called_once_with({"openai": {}})
+            read_current_openai_entries.assert_called_once_with(db.OMP_AGENT_DB_PATH, db.OMP_OPENAI_KEY)
+            read_current_openai_accounts.assert_called_once_with(db.OMP_AGENT_DB_PATH, db.OMP_OPENAI_KEY, db.account_fingerprint)
+            replace_openai_credentials.assert_called_once_with(
+                db.OMP_AGENT_DB_PATH,
+                [{"key": db.OMP_OPENAI_KEY, "value": {"accountId": "acct-omp"}}],
+            )
             read_current_codex_account.assert_called_once_with(db.CODEX_AUTH_PATH, db.CODEX_KEY, db.account_fingerprint)
             read_current_kilo_new_account.assert_called_once_with(db.KILO_AUTH_PATH, db.KILO_NEW_KEY, db.account_fingerprint)
 

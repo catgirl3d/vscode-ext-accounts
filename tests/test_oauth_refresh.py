@@ -196,6 +196,7 @@ class OAuthRefreshTests(unittest.TestCase):
 
         self.assertTrue(refresh._entry_uses_openai_codex_key(refresh.KILO_NEW_KEY))
         self.assertTrue(refresh._entry_uses_openai_codex_key(refresh.CODEX_KEY))
+        self.assertTrue(refresh._entry_uses_openai_codex_key(refresh.OMP_OPENAI_KEY))
         self.assertFalse(refresh._entry_uses_openai_codex_key("window.zoomLevel"))
         self.assertFalse(refresh._entry_uses_openai_codex_key("secret://{bad-json"))
         self.assertTrue(refresh._entry_uses_openai_codex_key(secret_key("kilocode.kilo-code")))

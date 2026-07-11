@@ -164,6 +164,14 @@ def summarize_account_ids(entries, skip_keys=None):
     return ", ".join(account_ids) if account_ids else "?"
 
 
+def summarize_current_account_infos(accounts):
+    account_ids = []
+    for account in accounts:
+        if isinstance(account, dict) and account.get("accountId"):
+            account_ids.append(shorten_account_id(account["accountId"], limit=8))
+    return ", ".join(account_ids) if account_ids else "-"
+
+
 def first_expires(entries, skip_keys=None):
     expires_ms = first_expires_ms(entries, skip_keys=skip_keys)
     return format_saved_expires(expires_ms)
@@ -1120,3 +1128,161 @@ class CodexTab(SavedAccountsTreeTab):
         if not messagebox.askyesno("Switch Codex account", f"Apply Codex account '{name}' to auth.json?"):
             return
         self.services.run_guarded(self.services.db.use_codex_account, name, success_msg=f"Switched Codex to '{name}'")
+
+
+class OmpOpenAITab(SavedAccountsTreeTab):
+    expected_kind = "omp"
+    selection_empty_message = "Select an OMP OpenAI account first."
+    rename_dialog_title = "Rename OMP OpenAI account"
+
+    def __init__(self, notebook: ttk.Notebook, services: GuiServices):
+        self.services = services
+        self.frame = tk.Frame(notebook, bg=services.bg)
+        notebook.add(self.frame, text="OMP OpenAI")
+        self._build()
+
+    def _build(self):
+        bg = self.services.bg
+        fg = self.services.fg
+        section_label_font = ("Segoe UI", 9, "bold")
+        current_value_width = max_text_width_px(("Segoe UI", 9), ["-", shorten_account_id("12345678901234567890")]) + 20
+
+        header = tk.Frame(self.frame, bg=bg, pady=3)
+        header.pack(fill="x", padx=10)
+        header.grid_columnconfigure(0, weight=0)
+        header.grid_columnconfigure(1, weight=1)
+
+        current_card = section_card(header, self.services)
+        current_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        current_card.grid_columnconfigure(0, minsize=current_value_width)
+        tk.Label(current_card, text="Current OMP", bg=SECTION_BG, fg="#6c7086", font=section_label_font).grid(row=0, column=0, sticky="w")
+        self.current_value = tk.Label(
+            current_card,
+            text="-",
+            bg=self.services.btn_bg,
+            fg="#6c7086",
+            font=("Segoe UI", 9),
+            anchor="w",
+            padx=6,
+            pady=2,
+        )
+        self.current_value.grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        db_card = section_card(header, self.services)
+        db_card.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        tk.Label(db_card, text="DB path", bg=SECTION_BG, fg="#6c7086", font=section_label_font).pack(anchor="w")
+        tk.Label(
+            db_card,
+            text=self.services.db.OMP_AGENT_DB_PATH,
+            bg=SECTION_BG,
+            fg=fg,
+            justify="left",
+            anchor="w",
+            wraplength=560,
+            font=("Segoe UI", 9),
+        ).pack(fill="x", pady=(4, 0))
+
+        self._build_saved_account_tree(
+            (
+                SavedAccountTreeColumn("name", "Name", 180, anchor="w"),
+                SavedAccountTreeColumn("accountIds", "Account IDs", 180),
+                SavedAccountTreeColumn("saved", "Saved", 120),
+                SavedAccountTreeColumn("expires", "Expires", 100),
+                SavedAccountTreeColumn("active", "Active", 90),
+                SavedAccountTreeColumn("status", "Status", 90),
+            )
+        )
+
+        self._build_saved_account_actions(
+            (
+                SavedAccountActionButton("▶ Use selected OMP", "on_use", accent=True),
+                SavedAccountActionButton("💾 Save current OMP", "on_save"),
+                SavedAccountActionButton("↻ Renew tokens", "on_refresh_selected", separator_before=True),
+                SavedAccountActionButton("✏ Rename", "on_rename"),
+                SavedAccountActionButton("🗑 Delete", "on_delete"),
+                SavedAccountActionButton("⟳ Reload", "on_refresh", separator_before=True),
+            )
+        )
+
+    def update_current_label(self, current_accounts):
+        if current_accounts:
+            self.current_value.config(text=summarize_current_account_infos(current_accounts), fg=SUCCESS_GREEN)
+        else:
+            self.current_value.config(text="-", fg="#6c7086")
+
+    def _current_fingerprint_tuple(self, current_accounts) -> tuple[str, ...]:
+        fingerprints = [
+            fingerprint
+            for fingerprint in (account.get("fingerprint") for account in current_accounts if isinstance(account, dict))
+            if isinstance(fingerprint, str) and fingerprint
+        ]
+        return tuple(sorted(fingerprints))
+
+    def _saved_fingerprint_tuple(self, entries) -> tuple[str, ...]:
+        fingerprints = [
+            fingerprint
+            for fingerprint in (self.services.db.account_fingerprint(entry.get("value", {})) for entry in entries)
+            if isinstance(fingerprint, str) and fingerprint
+        ]
+        return tuple(sorted(fingerprints))
+
+    def _load_omp_refresh_state(self):
+        db = self.services.db
+        try:
+            current_accounts = db.read_current_omp_openai_accounts()
+        except Exception:
+            current_accounts = []
+        return {
+            "current_accounts": current_accounts,
+            "fingerprints": self._current_fingerprint_tuple(current_accounts),
+        }
+
+    def _update_omp_refresh_state(self, refresh_state):
+        self.update_current_label(refresh_state["current_accounts"])
+
+    def _build_omp_saved_account_row(self, record: dict, refresh_state) -> SavedAccountTreeRow | None:
+        name = record["name"]
+        data = record["data"]
+        entries = data.get("entries", [])
+        omp_entries = [entry for entry in entries if entry.get("key") == self.services.db.OMP_OPENAI_KEY]
+        if not omp_entries:
+            return None
+
+        saved_at = format_saved_at(data)
+        account_ids = summarize_account_ids(omp_entries)
+        expires_ms = first_expires_ms(omp_entries)
+        expires = format_saved_expires(expires_ms)
+        current_fingerprints = refresh_state["fingerprints"]
+        active = "active" if current_fingerprints and self._saved_fingerprint_tuple(omp_entries) == current_fingerprints else "-"
+        refresh_status = format_refresh_status(data.get("refresh_status"))
+        return SavedAccountTreeRow(
+            iid=name,
+            values=(name, account_ids, saved_at, expires, active, refresh_status),
+            tags=account_row_tags(data, expires_ms),
+        )
+
+    def refresh(self):
+        self._present_saved_account_tree(
+            "omp",
+            load_current_state=self._load_omp_refresh_state,
+            update_current_state=self._update_omp_refresh_state,
+            build_row=self._build_omp_saved_account_row,
+        )
+
+    def on_save(self):
+        name = ask_account_name(self.services.root, "Save OMP OpenAI account", "Account name:")
+        if not name:
+            return
+        self.services.run_guarded(self.services.db.save_omp_openai_account, name, success_msg=f"Saved OMP OpenAI account '{name}'")
+
+    def on_use(self):
+        name = self.selected_saved_account_name()
+        if not name:
+            return
+        if not messagebox.askyesno("Switch OMP OpenAI account", f"Apply OMP OpenAI account '{name}' to agent.db?"):
+            return
+        self.services.run_guarded(
+            self.services.db.use_omp_openai_account,
+            name,
+            success_msg=f"Switched OMP OpenAI to '{name}'",
+        )
