@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
+from . import oauth_refresh
 from . import saved_account_status
 
 
@@ -155,6 +156,32 @@ def account_fingerprint(value: object) -> str | None:
         account_id_str = account_id if isinstance(account_id, str) else str(account_id)
         return hashlib.sha256(account_id_str.encode("utf-8")).hexdigest()
     return None
+
+
+def account_email(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return None
+
+    email = value.get("email")
+    if isinstance(email, str):
+        normalized = email.strip()
+        if normalized:
+            return normalized
+
+    raw_tokens = value.get("tokens")
+    tokens = raw_tokens if isinstance(raw_tokens, dict) else {}
+
+    nested_email = tokens.get("email")
+    if isinstance(nested_email, str):
+        normalized_nested = nested_email.strip()
+        if normalized_nested:
+            return normalized_nested
+
+    access_token = value.get("access_token") or value.get("access") or tokens.get("access_token") or ""
+    id_token = value.get("id_token") or tokens.get("id_token")
+    access_token_str = access_token if isinstance(access_token, str) else str(access_token or "")
+    id_token_str = id_token if isinstance(id_token, str) and id_token else None
+    return oauth_refresh.extract_email(access_token_str, id_token_str)
 
 
 def match_saved_to_current(

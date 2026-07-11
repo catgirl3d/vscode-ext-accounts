@@ -216,6 +216,7 @@ class IdeAccountsTabTests(unittest.TestCase):
             list_saved_accounts=lambda kind: [],
             match_saved_to_current=lambda entries, current_accounts: [],
             account_fingerprint=lambda value: None,
+            account_email=lambda value: value.get("email") if isinstance(value, dict) else None,
             is_ide_running=lambda ide=None: running_state[ide or "vscode"],
             set_ide=lambda name: None,
             save_ide_account=save_ide_account,
@@ -398,7 +399,7 @@ class IdeAccountsTabTests(unittest.TestCase):
             tab.refresh()
 
         self.assertEqual(tab.tree.item("expired_ide", "tags"), (EXPIRED_ROW_TAG,))
-        self.assertEqual(tab.tree.item("expired_ide", "values")[4], "expired")
+        self.assertEqual(tab.tree.item("expired_ide", "values")[5], "expired")
 
     def test_refresh_marks_invalid_ide_rows_from_terminal_refresh_errors(self):
         db_module = self.make_db(running=False)
@@ -427,7 +428,7 @@ class IdeAccountsTabTests(unittest.TestCase):
         tab.refresh()
 
         self.assertEqual(tab.tree.item("invalid_ide", "tags"), (gui_tabs.TERMINAL_REFRESH_ERROR_ROW_TAG,))
-        self.assertEqual(tab.tree.item("invalid_ide", "values")[6], "invalid")
+        self.assertEqual(tab.tree.item("invalid_ide", "values")[7], "invalid")
 
     def test_refresh_marks_ok_ide_rows_green(self):
         db_module = self.make_db(running=False)
@@ -456,7 +457,7 @@ class IdeAccountsTabTests(unittest.TestCase):
         tab.refresh()
 
         self.assertEqual(tab.tree.item("ok_ide", "tags"), (gui_tabs.REFRESH_OK_ROW_TAG,))
-        self.assertEqual(tab.tree.item("ok_ide", "values")[6], "ok")
+        self.assertEqual(tab.tree.item("ok_ide", "values")[7], "ok")
 
     def test_helper_methods_cover_selection_labels_and_current_account_rendering(self):
         db_module = self.make_db(running=False)
@@ -526,6 +527,7 @@ class IdeAccountsTabTests(unittest.TestCase):
                             "key": db_module.IDE_EXTENSIONS["kilocode"],
                             "value": {
                                 "accountId": "acct-kilo-1234567890",
+                                "email": "alice@example.com",
                                 "refresh_token": "refresh-match",
                                 "expires": 86_400_000,
                             },
@@ -546,7 +548,7 @@ class IdeAccountsTabTests(unittest.TestCase):
 
         failing_tab.refresh()
 
-        self.assertEqual(failing_tab.tree.item("alice", "values")[5], "-")
+        self.assertEqual(failing_tab.tree.item("alice", "values")[6], "-")
 
         db_module.read_current_accounts_for_ide = lambda ide: {
             "kilocode.kilo-code": {"accountId": "acct-live", "fingerprint": "refresh-match"}
@@ -558,8 +560,9 @@ class IdeAccountsTabTests(unittest.TestCase):
         tab.refresh()
 
         values = tab.tree.item("alice", "values")
-        self.assertEqual(values[5], "VS+AG+KN")
-        self.assertEqual(values[2], "acct-kil...")
+        self.assertEqual(values[1], "alice@example.com")
+        self.assertEqual(values[6], "VS+AG+KN")
+        self.assertEqual(values[3], "acct-kil...")
 
     def test_on_ide_change_and_save_handlers_delegate_correctly(self):
         db_module = self.make_db(running=False)
@@ -1054,6 +1057,7 @@ class CodexTabTests(unittest.TestCase):
             read_current_codex_account=lambda: {},
             list_saved_accounts=lambda kind: [],
             account_fingerprint=lambda value: None,
+            account_email=lambda value: value.get("email") if isinstance(value, dict) else None,
             refresh_saved_account=Mock(name="refresh_saved_account"),
             rename_saved_account=Mock(name="rename_saved_account"),
         )
@@ -1092,6 +1096,7 @@ class CodexTabTests(unittest.TestCase):
                                 "key": "codex://openai",
                                 "value": {
                                     "accountId": "acct-codex",
+                                    "email": "expired@example.com",
                                     "expires": 1_000,
                                 },
                             }
@@ -1100,6 +1105,7 @@ class CodexTabTests(unittest.TestCase):
                 }
             ],
             account_fingerprint=lambda value: None,
+            account_email=lambda value: value.get("email") if isinstance(value, dict) else None,
             refresh_saved_account=Mock(name="refresh_saved_account"),
             rename_saved_account=Mock(name="rename_saved_account"),
         )
@@ -1111,7 +1117,8 @@ class CodexTabTests(unittest.TestCase):
             tab.refresh()
 
         self.assertEqual(tab.tree.item("expired_codex", "tags"), (EXPIRED_ROW_TAG,))
-        self.assertEqual(tab.tree.item("expired_codex", "values")[3], "expired")
+        self.assertEqual(tab.tree.item("expired_codex", "values")[1], "expired@example.com")
+        self.assertEqual(tab.tree.item("expired_codex", "values")[4], "expired")
 
     def test_refresh_marks_failed_codex_rows_with_error_status(self):
         db_module = SimpleNamespace(
@@ -1129,6 +1136,7 @@ class CodexTabTests(unittest.TestCase):
                                 "key": "codex://openai",
                                 "value": {
                                     "accountId": "acct-codex",
+                                    "email": "error@example.com",
                                     "expires": 4_102_444_800_000,
                                 },
                             }
@@ -1137,6 +1145,7 @@ class CodexTabTests(unittest.TestCase):
                 }
             ],
             account_fingerprint=lambda value: None,
+            account_email=lambda value: value.get("email") if isinstance(value, dict) else None,
             refresh_saved_account=Mock(name="refresh_saved_account"),
             rename_saved_account=Mock(name="rename_saved_account"),
         )
@@ -1147,7 +1156,7 @@ class CodexTabTests(unittest.TestCase):
         tab.refresh()
 
         self.assertEqual(tab.tree.item("errored_codex", "tags"), (gui_tabs.REFRESH_ERROR_ROW_TAG,))
-        self.assertEqual(tab.tree.item("errored_codex", "values")[5], "error")
+        self.assertEqual(tab.tree.item("errored_codex", "values")[6], "error")
 
     def test_refresh_marks_ok_codex_rows_green(self):
         db_module = SimpleNamespace(
@@ -1165,6 +1174,7 @@ class CodexTabTests(unittest.TestCase):
                                 "key": "codex://openai",
                                 "value": {
                                     "accountId": "acct-codex",
+                                    "email": "ok@example.com",
                                     "expires": 4_102_444_800_000,
                                 },
                             }
@@ -1173,6 +1183,7 @@ class CodexTabTests(unittest.TestCase):
                 }
             ],
             account_fingerprint=lambda value: None,
+            account_email=lambda value: value.get("email") if isinstance(value, dict) else None,
             refresh_saved_account=Mock(name="refresh_saved_account"),
             rename_saved_account=Mock(name="rename_saved_account"),
         )
@@ -1183,14 +1194,14 @@ class CodexTabTests(unittest.TestCase):
         tab.refresh()
 
         self.assertEqual(tab.tree.item("ok_codex", "tags"), (gui_tabs.REFRESH_OK_ROW_TAG,))
-        self.assertEqual(tab.tree.item("ok_codex", "values")[5], "ok")
+        self.assertEqual(tab.tree.item("ok_codex", "values")[6], "ok")
 
     def test_update_current_label_refresh_and_handlers_cover_remaining_codex_branches(self):
         db_module = SimpleNamespace(
             CODEX_AUTH_PATH="C:/Users/Test/.codex/auth.json",
             CODEX_KEY="codex://openai",
             read_current_codex_account=lambda: {
-                "codex://openai": {"accountId": "acct-codex-1234567890", "fingerprint": "refresh-codex"}
+                "codex://openai": {"accountId": "acct-codex-1234567890", "fingerprint": "refresh-codex", "email": "current@example.com"}
             },
             list_saved_accounts=lambda kind: [
                 {
@@ -1202,6 +1213,7 @@ class CodexTabTests(unittest.TestCase):
                                 "key": "codex://openai",
                                 "value": {
                                     "accountId": "acct-codex-1234567890",
+                                    "email": "alice@example.com",
                                     "expires": 86_400_000,
                                     "refresh_token": "refresh-codex",
                                 },
@@ -1215,6 +1227,7 @@ class CodexTabTests(unittest.TestCase):
                 },
             ],
             account_fingerprint=lambda value: value.get("refresh_token"),
+            account_email=lambda value: value.get("email") if isinstance(value, dict) else None,
             save_codex_account=Mock(name="save_codex_account"),
             import_codex_account=Mock(name="import_codex_account"),
             use_codex_account=Mock(name="use_codex_account"),
@@ -1230,7 +1243,8 @@ class CodexTabTests(unittest.TestCase):
         tab.refresh()
 
         self.assertTrue(tab.current_value.cget("text").endswith("..."))
-        self.assertEqual(tab.tree.item("alice", "values")[4], "active")
+        self.assertEqual(tab.tree.item("alice", "values")[1], "alice@example.com")
+        self.assertEqual(tab.tree.item("alice", "values")[5], "active")
         self.assertFalse(tab.tree.exists("skip"))
 
         tab.update_current_label({})
@@ -1242,6 +1256,7 @@ class CodexTabTests(unittest.TestCase):
             read_current_codex_account=lambda: (_ for _ in ()).throw(RuntimeError("codex unavailable")),
             list_saved_accounts=db_module.list_saved_accounts,
             account_fingerprint=db_module.account_fingerprint,
+            account_email=db_module.account_email,
             save_codex_account=db_module.save_codex_account,
             import_codex_account=db_module.import_codex_account,
             use_codex_account=db_module.use_codex_account,

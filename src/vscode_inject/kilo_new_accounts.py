@@ -5,6 +5,7 @@ import json
 import os
 
 from .openai_codex import OPENAI_CODEX_PROVIDER
+from .oauth_refresh import extract_email
 
 
 def read_kilo_auth(auth_path: str) -> dict:
@@ -21,23 +22,35 @@ def write_kilo_auth(auth_path: str, data: dict) -> None:
 
 
 def to_kilo_new_format(value: dict) -> dict:
-    return {
+    out = {
         "type": "oauth",
         "access": value.get("access_token") or value.get("access", ""),
         "refresh": value.get("refresh_token") or value.get("refresh", ""),
         "expires": value.get("expires", 0),
         "accountId": value.get("accountId", ""),
     }
+    email = value.get("email")
+    if isinstance(email, str) and email.strip():
+        out["email"] = email.strip()
+    return out
 
 
 def from_kilo_new_format(value: dict) -> dict:
-    return {
+    email = value.get("email")
+    if not isinstance(email, str) or not email.strip():
+        email = extract_email(value.get("access", ""), None)
+    email_str = email.strip() if isinstance(email, str) else ""
+
+    out = {
         "type": OPENAI_CODEX_PROVIDER,
         "access_token": value.get("access", ""),
         "refresh_token": value.get("refresh", ""),
         "expires": value.get("expires", 0),
         "accountId": value.get("accountId", ""),
     }
+    if email_str:
+        out["email"] = email_str
+    return out
 
 
 def get_kilo_new_fingerprint(auth_path: str) -> str | None:
@@ -67,4 +80,7 @@ def read_current_kilo_new_account(
         "fingerprint": account_fingerprint(openai_entry),
         "expires": openai_entry.get("expires"),
     }
+    email = openai_entry.get("email")
+    if isinstance(email, str) and email.strip():
+        info["email"] = email.strip()
     return {kilo_new_key: info}

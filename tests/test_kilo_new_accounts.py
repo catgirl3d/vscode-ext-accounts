@@ -6,6 +6,7 @@ except ImportError:
     import tests.test_utils.bootstrap  # type: ignore
 
 import hashlib
+import base64
 import json
 import tempfile
 import unittest
@@ -25,6 +26,11 @@ class TempDirTestCase(unittest.TestCase):
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def make_jwt(exp: int, **claims) -> str:
+    payload = base64.b64encode(json.dumps({"exp": exp, **claims}).encode("utf-8")).decode("ascii").rstrip("=")
+    return f"header.{payload}.signature"
+
+
 class KiloNewAccountsModuleTests(TempDirTestCase):
     def test_kilo_new_read_write_and_conversion_helpers(self):
         auth_path = self.root / "kilo" / "auth.json"
@@ -41,6 +47,7 @@ class KiloNewAccountsModuleTests(TempDirTestCase):
                     "refresh_token": "refresh-2",
                     "expires": 456,
                     "accountId": "acct-2",
+                    "email": "saved@example.com",
                 }
             ),
             {
@@ -49,24 +56,39 @@ class KiloNewAccountsModuleTests(TempDirTestCase):
                 "refresh": "refresh-2",
                 "expires": 456,
                 "accountId": "acct-2",
+                "email": "saved@example.com",
             },
         )
         self.assertEqual(
             kilo_new_accounts.from_kilo_new_format(
-                {"access": "access-3", "refresh": "refresh-3", "expires": 789, "accountId": "acct-3"}
+                {
+                    "access": make_jwt(789, email="kilo@example.com"),
+                    "refresh": "refresh-3",
+                    "expires": 789,
+                    "accountId": "acct-3",
+                }
             ),
             {
                 "type": "openai-codex",
-                "access_token": "access-3",
+                "access_token": make_jwt(789, email="kilo@example.com"),
                 "refresh_token": "refresh-3",
                 "expires": 789,
                 "accountId": "acct-3",
+                "email": "kilo@example.com",
             },
         )
 
     def test_kilo_new_fingerprint_and_current_account_contract(self):
         auth_path = self.root / "kilo" / "auth.json"
-        auth = {"openai": {"access": "access-1", "refresh": "refresh-1", "expires": 123, "accountId": "acct-1"}}
+        auth = {
+            "openai": {
+                "access": "access-1",
+                "refresh": "refresh-1",
+                "expires": 123,
+                "accountId": "acct-1",
+                "email": "current@example.com",
+            }
+        }
         kilo_new_accounts.write_kilo_auth(str(auth_path), auth)
 
         expected = hashlib.sha256(b"refresh-1").hexdigest()
@@ -82,6 +104,7 @@ class KiloNewAccountsModuleTests(TempDirTestCase):
                     "accountId": "acct-1",
                     "fingerprint": "fp:refresh-1",
                     "expires": 123,
+                    "email": "current@example.com",
                 }
             },
         )

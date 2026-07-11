@@ -238,6 +238,35 @@ def extract_account_id_from_claims(claims: Mapping[str, Any] | None) -> str | No
     return None
 
 
+def extract_email_from_claims(claims: Mapping[str, Any] | None) -> str | None:
+    if not claims:
+        return None
+
+    direct = claims.get("email")
+    if isinstance(direct, str):
+        normalized = direct.strip()
+        if normalized:
+            return normalized
+
+    auth_claims = claims.get("https://api.openai.com/auth")
+    if isinstance(auth_claims, Mapping):
+        nested = auth_claims.get("email")
+        if isinstance(nested, str):
+            normalized = nested.strip()
+            if normalized:
+                return normalized
+
+    profile_claims = claims.get("https://api.openai.com/profile")
+    if isinstance(profile_claims, Mapping):
+        nested = profile_claims.get("email")
+        if isinstance(nested, str):
+            normalized = nested.strip()
+            if normalized:
+                return normalized
+
+    return None
+
+
 def extract_account_id(access_token: str, id_token: str | None = None) -> str | None:
     id_claims = decode_jwt_claims(id_token)
     account_id = extract_account_id_from_claims(id_claims)
@@ -246,6 +275,16 @@ def extract_account_id(access_token: str, id_token: str | None = None) -> str | 
 
     access_claims = decode_jwt_claims(access_token)
     return extract_account_id_from_claims(access_claims)
+
+
+def extract_email(access_token: str, id_token: str | None = None) -> str | None:
+    id_claims = decode_jwt_claims(id_token)
+    email = extract_email_from_claims(id_claims)
+    if email:
+        return email
+
+    access_claims = decode_jwt_claims(access_token)
+    return extract_email_from_claims(access_claims)
 
 
 def is_terminal_token_exchange_failure(

@@ -190,6 +190,18 @@ def summarize_current_account_infos(accounts):
     return ", ".join(account_ids) if account_ids else "-"
 
 
+def summarize_account_emails(entries, account_email_func, skip_keys=None):
+    skip_keys = set(skip_keys or [])
+    emails: list[str] = []
+    for entry in entries:
+        if entry.get("key") in skip_keys:
+            continue
+        email = account_email_func(entry.get("value", {}))
+        if isinstance(email, str) and email and email not in emails:
+            emails.append(email)
+    return ", ".join(emails) if emails else "-"
+
+
 def first_expires(entries, skip_keys=None):
     expires_ms = first_expires_ms(entries, skip_keys=skip_keys)
     return format_saved_expires(expires_ms)
@@ -840,6 +852,7 @@ class IdeAccountsTab(SavedAccountsTreeTab):
         self._build_saved_account_tree(
             (
                 SavedAccountTreeColumn("name", "Name", 225, anchor="w"),
+                SavedAccountTreeColumn("email", "Email", 220, anchor="w"),
                 SavedAccountTreeColumn("ext", "Ext", 75),
                 SavedAccountTreeColumn("accountIds", "Account IDs", 100),
                 SavedAccountTreeColumn("saved", "Saved", 112),
@@ -993,6 +1006,7 @@ class IdeAccountsTab(SavedAccountsTreeTab):
         ide_entries = [entry for entry in entries if entry.get("key") != self.services.db.CODEX_KEY]
 
         saved_at = format_saved_at(data)
+        email = summarize_account_emails(ide_entries, self.services.db.account_email)
         ext_tag = data.get("ext", "both")
         expires_ms = first_expires_ms(ide_entries)
         expires = format_saved_expires(expires_ms)
@@ -1002,7 +1016,7 @@ class IdeAccountsTab(SavedAccountsTreeTab):
         active = "+".join(active_tags) if active_tags else "-"
         return SavedAccountTreeRow(
             iid=name,
-            values=(name, ext_tag, accounts_short, saved_at, expires, active, refresh_status),
+            values=(name, email, ext_tag, accounts_short, saved_at, expires, active, refresh_status),
             tags=account_row_tags(data, expires_ms),
         )
 
@@ -1164,6 +1178,7 @@ class CodexTab(SavedAccountsTreeTab):
         self._build_saved_account_tree(
             (
                 SavedAccountTreeColumn("name", "Name", 150, anchor="w"),
+                SavedAccountTreeColumn("email", "Email", 220, anchor="w"),
                 SavedAccountTreeColumn("accountId", "Account ID", 180),
                 SavedAccountTreeColumn("saved", "Saved", 120),
                 SavedAccountTreeColumn("expires", "Expires", 100),
@@ -1214,6 +1229,7 @@ class CodexTab(SavedAccountsTreeTab):
 
         value = codex_entry.get("value", {})
         saved_at = format_saved_at(data)
+        email = self.services.db.account_email(value) or "-"
         account_id = shorten_account_id(value.get("accountId"))
         expires_ms = value.get("expires") if isinstance(value.get("expires"), int) else 0
         expires = format_saved_expires(expires_ms)
@@ -1222,7 +1238,7 @@ class CodexTab(SavedAccountsTreeTab):
         refresh_status = format_refresh_status(data.get("refresh_status"))
         return SavedAccountTreeRow(
             iid=name,
-            values=(name, account_id, saved_at, expires, active, refresh_status),
+            values=(name, email, account_id, saved_at, expires, active, refresh_status),
             tags=account_row_tags(data, expires_ms),
         )
 

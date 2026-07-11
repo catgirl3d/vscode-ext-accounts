@@ -4,6 +4,7 @@ import json
 import os
 
 from .openai_codex import OPENAI_CODEX_PROVIDER
+from .oauth_refresh import extract_email
 
 
 def decode_jwt_exp_ms(token: str | None) -> int:
@@ -49,9 +50,16 @@ def to_codex_format(value: dict, existing: dict | None = None) -> dict:
             "Codex auth.json requires id_token. It can only be reused from the same Codex account or imported from an existing Codex auth.json."
         )
 
+    access_token = value.get("access_token") or value.get("access", "")
+    access_token_str = access_token if isinstance(access_token, str) else ""
+    email = value.get("email")
+    if not isinstance(email, str) or not email.strip():
+        email = extract_email(access_token_str, id_token)
+    email_str = email.strip() if isinstance(email, str) else ""
+
     tokens = {
         "id_token": id_token,
-        "access_token": value.get("access_token") or value.get("access", ""),
+        "access_token": access_token_str,
         "refresh_token": value.get("refresh_token") or value.get("refresh", ""),
         "account_id": account_id,
     }
@@ -60,6 +68,10 @@ def to_codex_format(value: dict, existing: dict | None = None) -> dict:
     out["auth_mode"] = "chatgpt"
     out["OPENAI_API_KEY"] = None
     out["tokens"] = tokens
+    if email_str:
+        out["email"] = email_str
+    else:
+        out.pop("email", None)
     out["last_refresh"] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     return out
 
@@ -97,7 +109,12 @@ def from_codex_format(value: dict) -> dict:
     if not expires_ms:
         expires_ms = decode_jwt_exp_ms(access_token_str)
 
-    return {
+    email = value.get("email")
+    if not isinstance(email, str) or not email.strip():
+        email = extract_email(access_token_str, id_token_str)
+    email_str = email.strip() if isinstance(email, str) else ""
+
+    normalized = {
         "type": OPENAI_CODEX_PROVIDER,
         "access_token": access_token_str,
         "refresh_token": refresh_token_str,
@@ -105,6 +122,9 @@ def from_codex_format(value: dict) -> dict:
         "accountId": account_id_str,
         "id_token": id_token_str,
     }
+    if email_str:
+        normalized["email"] = email_str
+    return normalized
 
 
 def read_current_codex_account(auth_path: str, codex_key: str, fingerprint_func) -> dict[str, dict]:
@@ -118,4 +138,7 @@ def read_current_codex_account(auth_path: str, codex_key: str, fingerprint_func)
         "fingerprint": fingerprint,
         "expires": current.get("expires"),
     }
+    email = current.get("email")
+    if isinstance(email, str) and email:
+        info["email"] = email
     return {codex_key: info}

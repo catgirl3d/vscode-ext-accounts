@@ -22,8 +22,8 @@ class FixedDateTime(datetime.datetime):
         return cls(2024, 1, 2, 3, 4, 5, tzinfo=tz)
 
 
-def make_jwt(exp: int) -> str:
-    payload = base64.b64encode(json.dumps({"exp": exp}).encode("utf-8")).decode("ascii").rstrip("=")
+def make_jwt(exp: int, **claims) -> str:
+    payload = base64.b64encode(json.dumps({"exp": exp, **claims}).encode("utf-8")).decode("ascii").rstrip("=")
     return f"header.{payload}.signature"
 
 
@@ -49,7 +49,7 @@ class CodexAccountsModuleTests(TempDirTestCase):
 
     def test_codex_auth_read_write_and_current_account_contract(self):
         auth_path = self.root / "codex" / "auth.json"
-        access_token = make_jwt(1700000000)
+        access_token = make_jwt(1700000000, email="codex@example.com")
         raw_auth = {
             "tokens": {
                 "access_token": access_token,
@@ -75,6 +75,7 @@ class CodexAccountsModuleTests(TempDirTestCase):
                     "accountId": "acct-1",
                     "fingerprint": "refresh-1",
                     "expires": 1700000000000,
+                    "email": "codex@example.com",
                 }
             },
         )
@@ -87,13 +88,15 @@ class CodexAccountsModuleTests(TempDirTestCase):
                     "accountId": "acct-1",
                     "access_token": "access-1",
                     "refresh_token": "refresh-1",
+                    "email": "current@example.com",
                 },
-                existing={"keep": "me", "tokens": {"account_id": "acct-1", "id_token": "id-1"}},
+                existing={"keep": "me", "email": "stale@example.com", "tokens": {"account_id": "acct-1", "id_token": "id-1"}},
             )
 
         self.assertEqual(formatted["keep"], "me")
         self.assertEqual(formatted["auth_mode"], "chatgpt")
         self.assertIsNone(formatted["OPENAI_API_KEY"])
+        self.assertEqual(formatted["email"], "current@example.com")
         self.assertEqual(
             formatted["tokens"],
             {
@@ -116,6 +119,35 @@ class CodexAccountsModuleTests(TempDirTestCase):
         )
         self.assertEqual(without_existing_tokens["tokens"]["id_token"], "id-2")
 
+        updated_email = codex_accounts.to_codex_format(
+            {
+                "accountId": "acct-2",
+                "access_token": make_jwt(1700000001, email="new@example.com"),
+                "refresh_token": "refresh-2",
+                "id_token": "id-2",
+            },
+            existing={
+                "email": "old@example.com",
+                "tokens": {"account_id": "acct-old", "id_token": "id-old"},
+            },
+        )
+        self.assertEqual(updated_email["email"], "new@example.com")
+        self.assertEqual(codex_accounts.from_codex_format(updated_email)["email"], "new@example.com")
+
+        removed_stale_email = codex_accounts.to_codex_format(
+            {
+                "accountId": "acct-3",
+                "access_token": "access-3",
+                "refresh_token": "refresh-3",
+                "id_token": "id-3",
+            },
+            existing={
+                "email": "old@example.com",
+                "tokens": {"account_id": "acct-old", "id_token": "id-old"},
+            },
+        )
+        self.assertNotIn("email", removed_stale_email)
+
         with self.assertRaisesRegex(ValueError, "requires id_token"):
             codex_accounts.to_codex_format(
                 {"accountId": "acct-2", "access_token": "access-2", "refresh_token": "refresh-2"},
@@ -123,7 +155,7 @@ class CodexAccountsModuleTests(TempDirTestCase):
             )
 
     def test_from_codex_format_normalizes_nested_and_top_level_fields(self):
-        access_token = make_jwt(1700000000)
+        access_token = make_jwt(1700000000, email="nested@example.com")
         nested = codex_accounts.from_codex_format(
             {
                 "tokens": {
@@ -143,6 +175,7 @@ class CodexAccountsModuleTests(TempDirTestCase):
                 "expires": 1700000000000,
                 "accountId": "acct-1",
                 "id_token": "id-1",
+                "email": "nested@example.com",
             },
         )
 
@@ -159,6 +192,7 @@ class CodexAccountsModuleTests(TempDirTestCase):
                 "accountId": "top-acct",
                 "id_token": "top-id",
                 "expires": 321,
+                "email": "top@example.com",
             }
         )
         self.assertEqual(
@@ -170,6 +204,7 @@ class CodexAccountsModuleTests(TempDirTestCase):
                 "expires": 321,
                 "accountId": "top-acct",
                 "id_token": "top-id",
+                "email": "top@example.com",
             },
         )
 

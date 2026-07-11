@@ -377,6 +377,11 @@ class ParseVscdbTests(unittest.TestCase):
             user_facing_error_cls=db.UserFacingError,
         )
 
+        with patch.object(db.account_services, "account_email", return_value="user@example.com") as account_email:
+            self.assertEqual(db.account_email({"email": "user@example.com"}), "user@example.com")
+
+        account_email.assert_called_once_with({"email": "user@example.com"})
+
 
 if __name__ == "__main__":
     unittest.main()

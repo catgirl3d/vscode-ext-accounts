@@ -549,6 +549,10 @@ def account_fingerprint(value) -> str | None:
     return account_services.account_fingerprint(value)
 
 
+def account_email(value) -> str | None:
+    return account_services.account_email(value)
+
+
 def read_current_accounts(db_path: str | None = None, local_state_path: str | None = None) -> dict[str, dict]:
     return state_db.read_current_accounts(
         db_path or DB_PATH,
