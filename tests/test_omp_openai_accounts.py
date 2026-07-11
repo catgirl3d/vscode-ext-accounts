@@ -189,7 +189,7 @@ class OmpOpenAIAccountsTests(unittest.TestCase):
         self.assertIsNone(rows[2][3])
         self.assertEqual(rows[2][1], omp_openai_accounts.OPENAI_CODEX_PROVIDER)
         self.assertEqual(rows[2][2], omp_openai_accounts.OAUTH_CREDENTIAL_TYPE)
-        self.assertEqual(rows[2][4], "email:new@example.com")
+        self.assertEqual(rows[2][4], "account:acct-new")
         self.assertEqual(
             json.loads(rows[2][5]),
             {
@@ -228,7 +228,7 @@ class OmpOpenAIAccountsTests(unittest.TestCase):
                 "expires": 1_767_225_600_000,
                 "accountId": "acct-1",
                 "email": "user@example.com",
-                "identity_key": "email:user@example.com",
+                "identity_key": "account:acct-1",
             },
         )
 
@@ -247,6 +247,27 @@ class OmpOpenAIAccountsTests(unittest.TestCase):
         self.assertEqual(explicit["id_token"], "id-2")
         self.assertEqual(openai_identity.identity_key_for_value({"email": " User@Example.com "}), "email:user@example.com")
         self.assertEqual(openai_identity.identity_key_for_value({"account_id": "acct-3"}), "account:acct-3")
+        self.assertEqual(
+            openai_identity.identity_key_for_value({"email": "user@example.com", "accountId": "acct-4"}),
+            "account:acct-4",
+        )
+        self.assertEqual(
+            openai_identity.identity_key_for_entry(
+                {
+                    "identity_key": "custom:entry",
+                    "value": {"accountId": "acct-5", "email": "user@example.com"},
+                }
+            ),
+            "custom:entry",
+        )
+        self.assertEqual(
+            openai_identity.identity_keys_for_entry(
+                {
+                    "value": {"accountId": "acct-5", "email": "user@example.com"},
+                }
+            ),
+            ("account:acct-5", "email:user@example.com"),
+        )
 
         from_bool_expiry = omp_openai_accounts.from_omp_import_format(
             {

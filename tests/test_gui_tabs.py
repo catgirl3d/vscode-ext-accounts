@@ -137,6 +137,95 @@ class GuiTabsHelperTests(unittest.TestCase):
         with patch("vscode_inject.gui_tabs.current_time_ms", return_value=0):
             self.assertEqual(gui_tabs.first_expires([{"key": "a", "value": {"expires": 1_000}}]), "1970-01-01")
 
+        usage_snapshot = {
+            "limits": [
+                {"remaining": 16, "windowSeconds": gui_tabs.FIVE_HOUR_WINDOW_SECONDS},
+                {"remaining": 95, "windowSeconds": gui_tabs.WEEKLY_WINDOW_SECONDS},
+            ]
+        }
+        self.assertEqual(gui_tabs.format_usage_limits_snapshot(usage_snapshot), "16% / 95%")
+        self.assertEqual(
+            gui_tabs.format_usage_limits_snapshot(
+                {
+                    "limits": [
+                        {
+                            "remaining": 95,
+                            "windowSeconds": gui_tabs.FIVE_HOUR_WINDOW_SECONDS,
+                        }
+                    ]
+                }
+            ),
+            "95% / 5h",
+        )
+        self.assertEqual(
+            gui_tabs.format_usage_limits_snapshot(
+                {
+                    "limits": [
+                        {
+                            "remaining": 95,
+                            "windowSeconds": 30 * 24 * 60 * 60,
+                        },
+                        {
+                            "limit": 100,
+                        },
+                    ]
+                }
+            ),
+            "95% [30d]",
+        )
+        self.assertEqual(
+            gui_tabs.format_usage_limits_snapshot(
+                {
+                    "limits": [
+                        {"remaining": 80, "windowSeconds": gui_tabs.FIVE_HOUR_WINDOW_SECONDS},
+                        {"remaining": 90, "windowSeconds": 30 * 24 * 60 * 60},
+                    ]
+                }
+            ),
+            "80% / 5h · 90% / 30d",
+        )
+        self.assertEqual(
+            gui_tabs.summarize_usage_limits(
+                {
+                    "usage_snapshots": {
+                        "identity:account:acct-1": usage_snapshot,
+                    }
+                },
+                [
+                    {
+                        "key": "codex://openai",
+                        "value": {"email": "alice@example.com", "accountId": "acct-1", "refresh_token": "refresh-1"},
+                    }
+                ],
+            ),
+            "16% / 95%",
+        )
+        self.assertEqual(
+            gui_tabs.summarize_usage_limits(
+                {
+                    "usage_snapshots": {
+                        "identity:account:acct-a": {
+                            "limits": [{"remaining": 10, "windowSeconds": gui_tabs.FIVE_HOUR_WINDOW_SECONDS}],
+                        },
+                        "identity:account:acct-b": {
+                            "limits": [{"remaining": 20, "windowSeconds": gui_tabs.WEEKLY_WINDOW_SECONDS}],
+                        },
+                    }
+                },
+                [
+                    {
+                        "key": "omp://openai-a",
+                        "value": {"email": "shared@example.com", "accountId": "acct-a", "refresh_token": "refresh-a"},
+                    },
+                    {
+                        "key": "omp://openai-b",
+                        "value": {"email": "shared@example.com", "accountId": "acct-b", "refresh_token": "refresh-b"},
+                    },
+                ],
+            ),
+            "10% / 5h, 20% / 7d",
+        )
+
         tree = Mock()
         tree.selection.return_value = ()
         with patch("vscode_inject.gui_tabs.messagebox.showwarning") as showwarning:
@@ -198,6 +287,8 @@ class IdeAccountsTabTests(unittest.TestCase):
         save_ide_account = Mock(name="save_ide_account")
         import_ide_account_from_json_string = Mock(name="import_ide_account_from_json_string")
         use_ide_account = Mock(name="use_ide_account")
+        fetch_saved_account_usage = Mock(name="fetch_saved_account_usage")
+        fetch_saved_accounts_usage = Mock(name="fetch_saved_accounts_usage")
         refresh_saved_account = Mock(name="refresh_saved_account")
         rename_saved_account = Mock(name="rename_saved_account")
         backup = Mock(name="backup")
@@ -222,6 +313,8 @@ class IdeAccountsTabTests(unittest.TestCase):
             save_ide_account=save_ide_account,
             import_ide_account_from_json_string=import_ide_account_from_json_string,
             use_ide_account=use_ide_account,
+            fetch_saved_account_usage=fetch_saved_account_usage,
+            fetch_saved_accounts_usage=fetch_saved_accounts_usage,
             refresh_saved_account=refresh_saved_account,
             rename_saved_account=rename_saved_account,
             backup=backup,
@@ -248,7 +341,10 @@ class IdeAccountsTabTests(unittest.TestCase):
         self.assertIs(tab.run_button.master, tab.btn_frame)
         self.assertEqual(tab.context_menu.entrycget(0, "label"), "Use selected")
         self.assertEqual(tab.context_menu.entrycget(1, "label"), "Rename")
-        self.assertEqual(button_texts(tab.btn_frame)[:3], ["▶ Use selected", "💾 Save current", "📥 Import account"])
+        self.assertEqual(button_texts(tab.btn_frame)[:3], ["▶ Use selected", "💾 Save current", "📥 Import"])
+        self.assertEqual(tab.tree.heading("limits", "text"), "Limits")
+        self.assertIn("📊 Fetch", button_texts(tab.btn_frame))
+        self.assertIn("📊 Fetch all", button_texts(tab.btn_frame))
         self.assertIn("↻ Renew tokens", button_texts(tab.btn_frame))
         self.assertIn("⟳ Reload", button_texts(tab.btn_frame))
 
@@ -372,6 +468,27 @@ class IdeAccountsTabTests(unittest.TestCase):
         refresh_call.args[0]()
         db_module.refresh_saved_account.assert_called_once_with("alice", expected_kind="ide")
 
+        services.run_guarded.reset_mock()
+        db_module.fetch_saved_account_usage.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
+            tab.on_fetch_usage_selected()
+        fetch_call = services.run_guarded.call_args
+        self.assertIsNotNone(fetch_call)
+        self.assertEqual(fetch_call.args[1:], ())
+        self.assertEqual(fetch_call.kwargs, {})
+        fetch_call.args[0]()
+        db_module.fetch_saved_account_usage.assert_called_once_with("alice", expected_kind="ide")
+
+        services.run_guarded.reset_mock()
+        db_module.fetch_saved_accounts_usage.reset_mock()
+        tab.on_fetch_usage_all()
+        fetch_all_call = services.run_guarded.call_args
+        self.assertIsNotNone(fetch_all_call)
+        self.assertEqual(fetch_all_call.args[1:], ())
+        self.assertEqual(fetch_all_call.kwargs, {})
+        fetch_all_call.args[0]()
+        db_module.fetch_saved_accounts_usage.assert_called_once_with("ide")
+
     def test_refresh_marks_expired_ide_rows_red_and_labels_them_expired(self):
         db_module = self.make_db(running=False)
         db_module.list_saved_accounts = lambda kind: [
@@ -399,7 +516,7 @@ class IdeAccountsTabTests(unittest.TestCase):
             tab.refresh()
 
         self.assertEqual(tab.tree.item("expired_ide", "tags"), (EXPIRED_ROW_TAG,))
-        self.assertEqual(tab.tree.item("expired_ide", "values")[5], "expired")
+        self.assertEqual(tab.tree.item("expired_ide", "values")[6], "expired")
 
     def test_refresh_marks_invalid_ide_rows_from_terminal_refresh_errors(self):
         db_module = self.make_db(running=False)
@@ -428,7 +545,7 @@ class IdeAccountsTabTests(unittest.TestCase):
         tab.refresh()
 
         self.assertEqual(tab.tree.item("invalid_ide", "tags"), (gui_tabs.TERMINAL_REFRESH_ERROR_ROW_TAG,))
-        self.assertEqual(tab.tree.item("invalid_ide", "values")[7], "invalid")
+        self.assertEqual(tab.tree.item("invalid_ide", "values")[8], "invalid")
 
     def test_refresh_marks_ok_ide_rows_green(self):
         db_module = self.make_db(running=False)
@@ -457,7 +574,7 @@ class IdeAccountsTabTests(unittest.TestCase):
         tab.refresh()
 
         self.assertEqual(tab.tree.item("ok_ide", "tags"), (gui_tabs.REFRESH_OK_ROW_TAG,))
-        self.assertEqual(tab.tree.item("ok_ide", "values")[7], "ok")
+        self.assertEqual(tab.tree.item("ok_ide", "values")[8], "ok")
 
     def test_helper_methods_cover_selection_labels_and_current_account_rendering(self):
         db_module = self.make_db(running=False)
@@ -522,6 +639,14 @@ class IdeAccountsTabTests(unittest.TestCase):
                 "data": {
                     "ext": "kilocode",
                     "saved_at": "2026-05-17T11:18:00",
+                    "usage_snapshots": {
+                        "identity:account:acct-kilo-1234567890": {
+                            "limits": [
+                                {"remaining": 16, "windowSeconds": gui_tabs.FIVE_HOUR_WINDOW_SECONDS},
+                                {"remaining": 95, "windowSeconds": gui_tabs.WEEKLY_WINDOW_SECONDS},
+                            ]
+                        }
+                    },
                     "entries": [
                         {
                             "key": db_module.IDE_EXTENSIONS["kilocode"],
@@ -548,7 +673,7 @@ class IdeAccountsTabTests(unittest.TestCase):
 
         failing_tab.refresh()
 
-        self.assertEqual(failing_tab.tree.item("alice", "values")[6], "-")
+        self.assertEqual(failing_tab.tree.item("alice", "values")[7], "-")
 
         db_module.read_current_accounts_for_ide = lambda ide: {
             "kilocode.kilo-code": {"accountId": "acct-live", "fingerprint": "refresh-match"}
@@ -561,7 +686,8 @@ class IdeAccountsTabTests(unittest.TestCase):
 
         values = tab.tree.item("alice", "values")
         self.assertEqual(values[1], "alice@example.com")
-        self.assertEqual(values[6], "VS+AG+KN")
+        self.assertEqual(values[4], "16% / 95%")
+        self.assertEqual(values[7], "VS+AG+KN")
         self.assertEqual(values[3], "acct-kil...")
 
     def test_on_ide_change_and_save_handlers_delegate_correctly(self):
@@ -888,6 +1014,8 @@ class OmpOpenAITabTests(unittest.TestCase):
         import_omp_openai_account_from_json_string = Mock(name="import_omp_openai_account_from_json_string")
         append_omp_openai_account_from_json_string = Mock(name="append_omp_openai_account_from_json_string")
         use_omp_openai_account = Mock(name="use_omp_openai_account")
+        fetch_saved_account_usage = Mock(name="fetch_saved_account_usage")
+        fetch_saved_accounts_usage = Mock(name="fetch_saved_accounts_usage")
         refresh_saved_account = Mock(name="refresh_saved_account")
         rename_saved_account = Mock(name="rename_saved_account")
 
@@ -911,6 +1039,20 @@ class OmpOpenAITabTests(unittest.TestCase):
                 "kind": "omp",
                 "readable": True,
                 "data": {
+                    "usage_snapshots": {
+                        "identity:account:acct-expired-1234567890": {
+                            "limits": [
+                                {"remaining": 0, "windowSeconds": gui_tabs.FIVE_HOUR_WINDOW_SECONDS},
+                                {"remaining": 82, "windowSeconds": gui_tabs.WEEKLY_WINDOW_SECONDS},
+                            ]
+                        },
+                        "identity:account:acct-future-0987654321": {
+                            "limits": [
+                                {"remaining": 45, "windowSeconds": gui_tabs.FIVE_HOUR_WINDOW_SECONDS},
+                                {"remaining": 88, "windowSeconds": gui_tabs.WEEKLY_WINDOW_SECONDS},
+                            ]
+                        },
+                    },
                     "entries": [
                         {
                             "key": "omp://openai",
@@ -945,6 +1087,8 @@ class OmpOpenAITabTests(unittest.TestCase):
             import_omp_openai_account_from_json_string=import_omp_openai_account_from_json_string,
             append_omp_openai_account_from_json_string=append_omp_openai_account_from_json_string,
             use_omp_openai_account=use_omp_openai_account,
+            fetch_saved_account_usage=fetch_saved_account_usage,
+            fetch_saved_accounts_usage=fetch_saved_accounts_usage,
             refresh_saved_account=refresh_saved_account,
             rename_saved_account=rename_saved_account,
             delete_saved_account=Mock(name="delete_saved_account"),
@@ -973,9 +1117,10 @@ class OmpOpenAITabTests(unittest.TestCase):
 
         row_values = tab.tree.item("alice", "values")
         self.assertEqual(row_values[0], "alice")
-        self.assertEqual(row_values[3], "1/2 expired")
-        self.assertEqual(row_values[4], "2100-01-01")
-        self.assertEqual(row_values[5], "active")
+        self.assertEqual(row_values[2], "0% / 82%, 45% / 88%")
+        self.assertEqual(row_values[4], "1/2 expired")
+        self.assertEqual(row_values[5], "2100-01-01")
+        self.assertEqual(row_values[6], "active")
         self.assertEqual(tab.tree.item("alice", "tags"), (PARTIAL_EXPIRED_ROW_TAG,))
         self.assertEqual(tab.current_value.cget("text"), "acct-exp..., acct-fut...")
 
@@ -1027,6 +1172,25 @@ class OmpOpenAITabTests(unittest.TestCase):
             success_msg="Switched OMP OpenAI to 'alice'",
         )
 
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
+            tab.on_fetch_usage_selected()
+        fetch_call = services.run_guarded.call_args
+        self.assertIsNotNone(fetch_call)
+        self.assertEqual(fetch_call.args[1:], ())
+        self.assertEqual(fetch_call.kwargs, {})
+        fetch_call.args[0]()
+        db_module.fetch_saved_account_usage.assert_called_once_with("alice", expected_kind="omp")
+
+        services.run_guarded.reset_mock()
+        tab.on_fetch_usage_all()
+        fetch_all_call = services.run_guarded.call_args
+        self.assertIsNotNone(fetch_all_call)
+        self.assertEqual(fetch_all_call.args[1:], ())
+        self.assertEqual(fetch_all_call.kwargs, {})
+        fetch_all_call.args[0]()
+        db_module.fetch_saved_accounts_usage.assert_called_once_with("omp")
+
 
 class CodexTabTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1058,6 +1222,8 @@ class CodexTabTests(unittest.TestCase):
             list_saved_accounts=lambda kind: [],
             account_fingerprint=lambda value: None,
             account_email=lambda value: value.get("email") if isinstance(value, dict) else None,
+            fetch_saved_account_usage=Mock(name="fetch_saved_account_usage"),
+            fetch_saved_accounts_usage=Mock(name="fetch_saved_accounts_usage"),
             refresh_saved_account=Mock(name="refresh_saved_account"),
             rename_saved_account=Mock(name="rename_saved_account"),
         )
@@ -1067,7 +1233,9 @@ class CodexTabTests(unittest.TestCase):
 
         self.assertEqual(tab.context_menu.entrycget(0, "label"), "Use selected")
         self.assertEqual(tab.context_menu.entrycget(1, "label"), "Rename")
-        self.assertEqual(button_texts(tab.btn_frame)[:3], ["▶ Use selected Codex", "💾 Save current Codex", "📥 Import Codex auth"])
+        self.assertEqual(button_texts(tab.btn_frame)[:3], ["▶ Use selected", "💾 Save current", "📥 Import Codex auth"])
+        self.assertIn("📊 Fetch", button_texts(tab.btn_frame))
+        self.assertIn("📊 Fetch all", button_texts(tab.btn_frame))
         self.assertIn("↻ Renew tokens", button_texts(tab.btn_frame))
         self.assertIn("⟳ Reload", button_texts(tab.btn_frame))
 
@@ -1081,6 +1249,25 @@ class CodexTabTests(unittest.TestCase):
         refresh_call.args[0]()
         db_module.refresh_saved_account.assert_called_once_with("alice", expected_kind="codex")
 
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"):
+            tab.on_fetch_usage_selected()
+        fetch_call = services.run_guarded.call_args
+        self.assertIsNotNone(fetch_call)
+        self.assertEqual(fetch_call.args[1:], ())
+        self.assertEqual(fetch_call.kwargs, {})
+        fetch_call.args[0]()
+        db_module.fetch_saved_account_usage.assert_called_once_with("alice", expected_kind="codex")
+
+        services.run_guarded.reset_mock()
+        tab.on_fetch_usage_all()
+        fetch_all_call = services.run_guarded.call_args
+        self.assertIsNotNone(fetch_all_call)
+        self.assertEqual(fetch_all_call.args[1:], ())
+        self.assertEqual(fetch_all_call.kwargs, {})
+        fetch_all_call.args[0]()
+        db_module.fetch_saved_accounts_usage.assert_called_once_with("codex")
+
     def test_refresh_marks_expired_codex_rows_red_and_labels_them_expired(self):
         db_module = SimpleNamespace(
             CODEX_AUTH_PATH="C:/Users/Test/.codex/auth.json",
@@ -1091,6 +1278,14 @@ class CodexTabTests(unittest.TestCase):
                     "name": "expired_codex",
                     "data": {
                         "saved_at": "2026-05-15T10:00:00",
+                        "usage_snapshots": {
+                            "identity:account:acct-codex": {
+                                "limits": [
+                                    {"remaining": 0, "windowSeconds": gui_tabs.FIVE_HOUR_WINDOW_SECONDS},
+                                    {"remaining": 82, "windowSeconds": gui_tabs.WEEKLY_WINDOW_SECONDS},
+                                ]
+                            }
+                        },
                         "entries": [
                             {
                                 "key": "codex://openai",
@@ -1118,7 +1313,8 @@ class CodexTabTests(unittest.TestCase):
 
         self.assertEqual(tab.tree.item("expired_codex", "tags"), (EXPIRED_ROW_TAG,))
         self.assertEqual(tab.tree.item("expired_codex", "values")[1], "expired@example.com")
-        self.assertEqual(tab.tree.item("expired_codex", "values")[4], "expired")
+        self.assertEqual(tab.tree.item("expired_codex", "values")[3], "0% / 82%")
+        self.assertEqual(tab.tree.item("expired_codex", "values")[5], "expired")
 
     def test_refresh_marks_failed_codex_rows_with_error_status(self):
         db_module = SimpleNamespace(
@@ -1156,7 +1352,7 @@ class CodexTabTests(unittest.TestCase):
         tab.refresh()
 
         self.assertEqual(tab.tree.item("errored_codex", "tags"), (gui_tabs.REFRESH_ERROR_ROW_TAG,))
-        self.assertEqual(tab.tree.item("errored_codex", "values")[6], "error")
+        self.assertEqual(tab.tree.item("errored_codex", "values")[7], "error")
 
     def test_refresh_marks_ok_codex_rows_green(self):
         db_module = SimpleNamespace(
@@ -1194,7 +1390,7 @@ class CodexTabTests(unittest.TestCase):
         tab.refresh()
 
         self.assertEqual(tab.tree.item("ok_codex", "tags"), (gui_tabs.REFRESH_OK_ROW_TAG,))
-        self.assertEqual(tab.tree.item("ok_codex", "values")[6], "ok")
+        self.assertEqual(tab.tree.item("ok_codex", "values")[7], "ok")
 
     def test_update_current_label_refresh_and_handlers_cover_remaining_codex_branches(self):
         db_module = SimpleNamespace(
@@ -1208,6 +1404,14 @@ class CodexTabTests(unittest.TestCase):
                     "name": "alice",
                     "data": {
                         "saved_at": "2026-05-17T11:18:00",
+                        "usage_snapshots": {
+                            "identity:account:acct-codex-1234567890": {
+                                "limits": [
+                                    {"remaining": 0, "windowSeconds": gui_tabs.FIVE_HOUR_WINDOW_SECONDS},
+                                    {"remaining": 82, "windowSeconds": gui_tabs.WEEKLY_WINDOW_SECONDS},
+                                ]
+                            }
+                        },
                         "entries": [
                             {
                                 "key": "codex://openai",
@@ -1244,7 +1448,8 @@ class CodexTabTests(unittest.TestCase):
 
         self.assertTrue(tab.current_value.cget("text").endswith("..."))
         self.assertEqual(tab.tree.item("alice", "values")[1], "alice@example.com")
-        self.assertEqual(tab.tree.item("alice", "values")[5], "active")
+        self.assertEqual(tab.tree.item("alice", "values")[3], "0% / 82%")
+        self.assertEqual(tab.tree.item("alice", "values")[6], "active")
         self.assertFalse(tab.tree.exists("skip"))
 
         tab.update_current_label({})

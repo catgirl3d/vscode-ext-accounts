@@ -15,7 +15,7 @@ from . import refresh_scheduler
 from .gui_tabs import CodexTab, GuiServices, IdeAccountsTab, OmpOpenAITab, SUCCESS_GREEN
 
 
-WINDOW_WIDTH = 980
+WINDOW_WIDTH = 500
 POLL_INTERVAL_MS = 2000
 AUTO_REFRESH_START_DELAY_MS = 1000
 AUTO_REFRESH_QUEUE_POLL_INTERVAL_MS = 500

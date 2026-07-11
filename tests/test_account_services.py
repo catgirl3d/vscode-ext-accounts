@@ -1101,6 +1101,407 @@ class AccountServicesModuleTests(TempDirTestCase):
         self.assertEqual(messages[1], "  accountId: acct-2")
         self.assertTrue(messages[2].startswith("  expires:   "))
 
+    def test_fetch_saved_account_usage_deduplicates_entries_and_writes_snapshots(self):
+        written_records: list[tuple[str, dict]] = []
+        fetch_usage_snapshot = Mock(
+            return_value={
+                "fetched_at": "2026-07-11T10:00:00Z",
+                "limits": [
+                    {
+                        "remaining": 42,
+                        "windowSeconds": 18_000,
+                    }
+                ],
+            }
+        )
+
+        result = account_services.fetch_saved_account_usage(
+            "alice",
+            expected_kind="ide",
+            operation_lock=contextlib.nullcontext(),
+            load_saved_account_data=lambda name, expected_kind=None: (
+                "alice.json",
+                {
+                    "name": "alice",
+                    "usage_snapshots": {
+                        "stale-key": {
+                            "fetched_at": "2026-07-10T10:00:00Z",
+                            "limits": [{"remaining": 1, "windowSeconds": 18_000}],
+                        }
+                    },
+                    "entries": [
+                        {
+                            "key": "secret://kilocode",
+                            "value": {
+                                "access_token": "access-1",
+                                "refresh_token": "refresh-1",
+                                "accountId": "acct-1",
+                                "email": "Alice@example.com",
+                            },
+                        },
+                        {
+                            "key": self.kilo_new_key,
+                            "value": {
+                                "access_token": "access-1",
+                                "refresh_token": "refresh-1",
+                                "accountId": "acct-1",
+                                "email": "alice@example.com",
+                            },
+                        },
+                    ],
+                },
+                "ide",
+            ),
+            write_saved_account_data=lambda path, data: written_records.append((path, data)),
+            fetch_usage_snapshot=fetch_usage_snapshot,
+            user_facing_error_cls=UserFacingError,
+        )
+
+        fetch_usage_snapshot.assert_called_once_with("access-1", account_id="acct-1")
+        self.assertEqual(result.path, "alice.json")
+        self.assertEqual(result.requested_snapshots, 1)
+        self.assertEqual(result.updated_snapshots, 1)
+        self.assertEqual(result.failed_snapshots, 0)
+        self.assertEqual(result.error_messages, ())
+        self.assertEqual(len(written_records), 1)
+        self.assertEqual(written_records[0][0], "alice.json")
+        self.assertIn("usage_last_fetched_at", written_records[0][1])
+        self.assertEqual(
+            written_records[0][1]["usage_snapshots"],
+            {
+                "identity:account:acct-1": {
+                    "fetched_at": "2026-07-11T10:00:00Z",
+                    "limits": [
+                        {
+                            "remaining": 42,
+                            "windowSeconds": 18_000,
+                        }
+                    ],
+                }
+            },
+        )
+
+    def test_fetch_saved_account_usage_fetches_same_email_accounts_separately(self):
+        written_records: list[tuple[str, dict]] = []
+        fetch_calls: list[tuple[str, str | None]] = []
+
+        def fetch_usage_snapshot(access_token, account_id=None):
+            fetch_calls.append((access_token, account_id))
+            if account_id == "acct-a":
+                return {
+                    "fetched_at": "2026-07-11T10:00:00Z",
+                    "limits": [{"remaining": 10, "windowSeconds": 18_000}],
+                }
+            return {
+                "fetched_at": "2026-07-11T10:00:01Z",
+                "limits": [{"remaining": 20, "windowSeconds": 604_800}],
+            }
+
+        result = account_services.fetch_saved_account_usage(
+            "team",
+            expected_kind="omp",
+            operation_lock=contextlib.nullcontext(),
+            load_saved_account_data=lambda name, expected_kind=None: (
+                "team.json",
+                {
+                    "name": "team",
+                    "entries": [
+                        {
+                            "key": "omp://openai-a",
+                            "value": {
+                                "access_token": "access-a",
+                                "refresh_token": "refresh-a",
+                                "accountId": "acct-a",
+                                "email": "shared@example.com",
+                            },
+                        },
+                        {
+                            "key": "omp://openai-b",
+                            "value": {
+                                "access_token": "access-b",
+                                "refresh_token": "refresh-b",
+                                "accountId": "acct-b",
+                                "email": "shared@example.com",
+                            },
+                        },
+                    ],
+                },
+                "omp",
+            ),
+            write_saved_account_data=lambda path, data: written_records.append((path, data)),
+            fetch_usage_snapshot=fetch_usage_snapshot,
+            user_facing_error_cls=UserFacingError,
+        )
+
+        self.assertEqual(result.requested_snapshots, 2)
+        self.assertEqual(result.updated_snapshots, 2)
+        self.assertEqual(result.failed_snapshots, 0)
+        self.assertEqual(fetch_calls, [("access-a", "acct-a"), ("access-b", "acct-b")])
+        self.assertEqual(
+            written_records[0][1]["usage_snapshots"],
+            {
+                "identity:account:acct-a": {
+                    "fetched_at": "2026-07-11T10:00:00Z",
+                    "limits": [{"remaining": 10, "windowSeconds": 18_000}],
+                },
+                "identity:account:acct-b": {
+                    "fetched_at": "2026-07-11T10:00:01Z",
+                    "limits": [{"remaining": 20, "windowSeconds": 604_800}],
+                },
+            },
+        )
+
+    def test_fetch_saved_account_usage_uses_explicit_identity_key_when_present(self):
+        written_records: list[tuple[str, dict]] = []
+
+        result = account_services.fetch_saved_account_usage(
+            "team",
+            expected_kind="omp",
+            operation_lock=contextlib.nullcontext(),
+            load_saved_account_data=lambda name, expected_kind=None: (
+                "team.json",
+                {
+                    "name": "team",
+                    "entries": [
+                        {
+                            "key": "omp://openai-a",
+                            "identity_key": "custom:shared",
+                            "value": {
+                                "access_token": "access-a",
+                                "refresh_token": "refresh-a",
+                                "accountId": "acct-a",
+                                "email": "shared@example.com",
+                            },
+                        }
+                    ],
+                },
+                "omp",
+            ),
+            write_saved_account_data=lambda path, data: written_records.append((path, data)),
+            fetch_usage_snapshot=lambda access_token, account_id=None: {
+                "fetched_at": "2026-07-11T10:00:00Z",
+                "limits": [{"remaining": 10, "windowSeconds": 18_000}],
+            },
+            user_facing_error_cls=UserFacingError,
+        )
+
+        self.assertEqual(result.requested_snapshots, 1)
+        self.assertEqual(
+            written_records[0][1]["usage_snapshots"],
+            {
+                "identity:custom:shared": {
+                    "fetched_at": "2026-07-11T10:00:00Z",
+                    "limits": [{"remaining": 10, "windowSeconds": 18_000}],
+                }
+            },
+        )
+
+    def test_fetch_saved_account_usage_preserves_failed_current_snapshot(self):
+        written_records: list[tuple[str, dict]] = []
+
+        def fetch_usage_snapshot(access_token, account_id=None):
+            if account_id == "acct-a":
+                return {
+                    "fetched_at": "2026-07-11T12:00:00Z",
+                    "limits": [{"remaining": 15, "windowSeconds": 18_000}],
+                }
+            raise RuntimeError("temporary outage")
+
+        result = account_services.fetch_saved_account_usage(
+            "team",
+            expected_kind="omp",
+            operation_lock=contextlib.nullcontext(),
+            load_saved_account_data=lambda name, expected_kind=None: (
+                "team.json",
+                {
+                    "name": "team",
+                    "usage_snapshots": {
+                        "identity:account:acct-a": {
+                            "fetched_at": "2026-07-10T10:00:00Z",
+                            "limits": [{"remaining": 70, "windowSeconds": 18_000}],
+                        },
+                        "identity:account:acct-b": {
+                            "fetched_at": "2026-07-10T10:00:00Z",
+                            "limits": [{"remaining": 80, "windowSeconds": 604_800}],
+                        },
+                        "stale-key": {
+                            "fetched_at": "2026-07-10T10:00:00Z",
+                            "limits": [{"remaining": 1, "windowSeconds": 2_592_000}],
+                        },
+                    },
+                    "entries": [
+                        {
+                            "key": "omp://openai-a",
+                            "value": {
+                                "access_token": "access-a",
+                                "refresh_token": "refresh-a",
+                                "accountId": "acct-a",
+                                "email": "shared@example.com",
+                            },
+                        },
+                        {
+                            "key": "omp://openai-b",
+                            "value": {
+                                "access_token": "access-b",
+                                "refresh_token": "refresh-b",
+                                "accountId": "acct-b",
+                                "email": "shared@example.com",
+                            },
+                        },
+                    ],
+                },
+                "omp",
+            ),
+            write_saved_account_data=lambda path, data: written_records.append((path, data)),
+            fetch_usage_snapshot=fetch_usage_snapshot,
+            user_facing_error_cls=UserFacingError,
+        )
+
+        self.assertEqual(result.requested_snapshots, 2)
+        self.assertEqual(result.updated_snapshots, 1)
+        self.assertEqual(result.failed_snapshots, 1)
+        self.assertEqual(result.error_messages, ("temporary outage",))
+        self.assertEqual(
+            written_records[0][1]["usage_snapshots"],
+            {
+                "identity:account:acct-a": {
+                    "fetched_at": "2026-07-11T12:00:00Z",
+                    "limits": [{"remaining": 15, "windowSeconds": 18_000}],
+                },
+                "identity:account:acct-b": {
+                    "fetched_at": "2026-07-10T10:00:00Z",
+                    "limits": [{"remaining": 80, "windowSeconds": 604_800}],
+                },
+            },
+        )
+
+    def test_fetch_saved_account_usage_raises_when_all_snapshots_fail(self):
+        writes: list[tuple[str, dict]] = []
+
+        with self.assertRaisesRegex(UserFacingError, "Usage fetch failed for 'alice': boom"):
+            account_services.fetch_saved_account_usage(
+                "alice",
+                expected_kind="codex",
+                operation_lock=contextlib.nullcontext(),
+                load_saved_account_data=lambda name, expected_kind=None: (
+                    "alice.json",
+                    {
+                        "name": "alice",
+                        "entries": [
+                            {
+                                "key": "codex://openai",
+                                "value": {
+                                    "access_token": "access-1",
+                                    "refresh_token": "refresh-1",
+                                    "accountId": "acct-1",
+                                },
+                            }
+                        ],
+                    },
+                    "codex",
+                ),
+                write_saved_account_data=lambda path, data: writes.append((path, data)),
+                fetch_usage_snapshot=lambda access_token, account_id=None: (_ for _ in ()).throw(RuntimeError("boom")),
+                user_facing_error_cls=UserFacingError,
+            )
+
+        self.assertEqual(writes, [])
+
+    def test_fetch_saved_accounts_usage_aggregates_partial_failures(self):
+        writes: list[tuple[str, dict]] = []
+        snapshots_by_account = {
+            "alice": {
+                "fetched_at": "2026-07-11T10:00:00Z",
+                "limits": [{"remaining": 42, "windowSeconds": 18_000}],
+            },
+            "bob": RuntimeError("network down"),
+        }
+
+        account_payloads = {
+            "alice": {
+                "name": "alice",
+                "entries": [
+                    {
+                        "key": "codex://openai",
+                        "value": {
+                            "access_token": "access-a",
+                            "refresh_token": "refresh-a",
+                            "accountId": "acct-a",
+                        },
+                    }
+                ],
+            },
+            "bob": {
+                "name": "bob",
+                "entries": [
+                    {
+                        "key": "codex://openai",
+                        "value": {
+                            "access_token": "access-b",
+                            "refresh_token": "refresh-b",
+                            "accountId": "acct-b",
+                        },
+                    }
+                ],
+            },
+        }
+
+        def fetch_usage_snapshot(access_token, account_id=None):
+            if access_token == "access-a":
+                return snapshots_by_account["alice"]
+            raise snapshots_by_account["bob"]
+
+        result = account_services.fetch_saved_accounts_usage(
+            expected_kind="codex",
+            operation_lock=contextlib.nullcontext(),
+            list_saved_accounts=lambda kind: [
+                {"name": "alice"},
+                {"name": "bob"},
+            ] if kind == "codex" else [],
+            load_saved_account_data=lambda name, expected_kind=None: (f"{name}.json", account_payloads[name], "codex"),
+            write_saved_account_data=lambda path, data: writes.append((path, data)),
+            fetch_usage_snapshot=fetch_usage_snapshot,
+            user_facing_error_cls=UserFacingError,
+        )
+
+        self.assertEqual(result.requested_accounts, 2)
+        self.assertEqual(result.updated_accounts, 1)
+        self.assertEqual(result.failed_accounts, 1)
+        self.assertEqual(result.requested_snapshots, 2)
+        self.assertEqual(result.updated_snapshots, 1)
+        self.assertEqual(result.failed_snapshots, 1)
+        self.assertEqual(result.error_messages, ("bob: network down",))
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][0], "alice.json")
+
+    def test_fetch_saved_accounts_usage_raises_when_every_account_fails(self):
+        with self.assertRaisesRegex(UserFacingError, "Mass usage fetch failed for codex: alice: boom"):
+            account_services.fetch_saved_accounts_usage(
+                expected_kind="codex",
+                operation_lock=contextlib.nullcontext(),
+                list_saved_accounts=lambda kind: [{"name": "alice"}] if kind == "codex" else [],
+                load_saved_account_data=lambda name, expected_kind=None: (
+                    "alice.json",
+                    {
+                        "name": "alice",
+                        "entries": [
+                            {
+                                "key": "codex://openai",
+                                "value": {
+                                    "access_token": "access-a",
+                                    "refresh_token": "refresh-a",
+                                    "accountId": "acct-a",
+                                },
+                            }
+                        ],
+                    },
+                    "codex",
+                ),
+                write_saved_account_data=lambda path, data: None,
+                fetch_usage_snapshot=lambda access_token, account_id=None: (_ for _ in ()).throw(RuntimeError("boom")),
+                user_facing_error_cls=UserFacingError,
+            )
+
 
 class RefactorAccountServicesTests(unittest.TestCase):
     def test_account_services_entry_key_parser_tolerates_non_secret_keys(self):

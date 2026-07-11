@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import datetime
 import hashlib
 import json
@@ -10,7 +11,10 @@ from typing import Any, Callable, Mapping, Sequence
 
 from . import oauth_refresh
 from . import saved_account_status
-from .openai_identity import identity_key_for_value
+from .openai_identity import identity_keys_for_entry
+
+
+MAX_PARALLEL_USAGE_FETCH_WORKERS = 6
 
 
 @dataclass(frozen=True)
@@ -25,6 +29,34 @@ class ImportedCodexAccountResult:
     path: str
     account_id: str
     expires_ms: int
+
+
+@dataclass(frozen=True)
+class SavedAccountUsageFetchResult:
+    path: str
+    requested_snapshots: int
+    updated_snapshots: int
+    failed_snapshots: int
+    error_messages: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SavedAccountsUsageBatchFetchResult:
+    requested_accounts: int
+    updated_accounts: int
+    failed_accounts: int
+    requested_snapshots: int
+    updated_snapshots: int
+    failed_snapshots: int
+    error_messages: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _PendingSavedAccountUsageFetch:
+    name: str
+    path: str
+    account_data: Mapping[str, Any]
+    entries: Sequence[Mapping[str, Any]]
 
 
 def _write_saved_account_file(
@@ -79,6 +111,118 @@ def _validate_saved_account_value(
     if not value.get("id_token"):
         raise user_facing_error_cls(missing_id_token_message)
     return expires_ms
+
+
+def saved_account_usage_snapshot_keys(entry: Mapping[str, Any], *, entry_index: int | None = None) -> tuple[str, ...]:
+    keys: list[str] = []
+
+    for identity_key in identity_keys_for_entry(entry):
+        prefixed_identity_key = f"identity:{identity_key}"
+        if prefixed_identity_key not in keys:
+            keys.append(prefixed_identity_key)
+
+    value = entry.get("value")
+    if not isinstance(value, Mapping):
+        value = {}
+
+    fingerprint = account_fingerprint(dict(value))
+    if fingerprint:
+        fingerprint_key = f"fingerprint:{fingerprint}"
+        if fingerprint_key not in keys:
+            keys.append(fingerprint_key)
+
+    if entry_index is not None:
+        entry_key = f"entry:{entry_index}"
+        if entry_key not in keys:
+            keys.append(entry_key)
+
+    return tuple(keys)
+
+
+def saved_account_usage_snapshot_key(entry: Mapping[str, Any], *, entry_index: int | None = None) -> str | None:
+    keys = saved_account_usage_snapshot_keys(entry, entry_index=entry_index)
+    return keys[0] if keys else None
+
+
+def _saved_account_usage_fetch_targets(entries: Sequence[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
+    fetch_targets: dict[str, tuple[str, str]] = {}
+    for entry_index, entry in enumerate(entries):
+        if not isinstance(entry, Mapping):
+            continue
+        value = entry.get("value")
+        if not isinstance(value, Mapping):
+            continue
+
+        bundle = oauth_refresh.token_bundle_from_value(value)
+        access_token = bundle.access_token
+        if not access_token:
+            continue
+
+        snapshot_key = saved_account_usage_snapshot_key(entry, entry_index=entry_index)
+        if snapshot_key and snapshot_key not in fetch_targets:
+            fetch_targets[snapshot_key] = (access_token, bundle.account_id)
+    return fetch_targets
+
+
+def _fetch_saved_account_usage_from_payload(
+    *,
+    name: str,
+    path: str,
+    account_data: Mapping[str, Any],
+    entries: Sequence[Mapping[str, Any]],
+    write_saved_account_data,
+    fetch_usage_snapshot,
+    user_facing_error_cls,
+) -> SavedAccountUsageFetchResult:
+    fetch_targets = _saved_account_usage_fetch_targets(entries)
+    if not fetch_targets:
+        raise user_facing_error_cls(
+            f"Account '{name}' does not contain any OpenAI access tokens for usage fetch."
+        )
+
+    existing_snapshots = account_data.get("usage_snapshots") if isinstance(account_data, Mapping) else None
+    usage_snapshots = {
+        snapshot_key: snapshot
+        for snapshot_key, snapshot in (existing_snapshots.items() if isinstance(existing_snapshots, Mapping) else ())
+        if snapshot_key in fetch_targets and isinstance(snapshot, Mapping)
+    }
+
+    updated_snapshots = 0
+    error_messages: list[str] = []
+    for snapshot_key, (access_token, account_id) in fetch_targets.items():
+        try:
+            snapshot = fetch_usage_snapshot(access_token, account_id=account_id or None)
+        except Exception as exc:
+            error_messages.append(str(exc))
+            continue
+
+        usage_snapshots[snapshot_key] = snapshot
+        updated_snapshots += 1
+
+    if updated_snapshots <= 0:
+        details = error_messages[0] if error_messages else "Usage endpoints returned no data."
+        raise user_facing_error_cls(f"Usage fetch failed for '{name}': {details}")
+
+    updated_data = dict(account_data)
+    updated_data["usage_snapshots"] = usage_snapshots
+    updated_data["usage_last_fetched_at"] = oauth_refresh.current_time_iso()
+    write_saved_account_data(path, updated_data)
+
+    return SavedAccountUsageFetchResult(
+        path=path,
+        requested_snapshots=len(fetch_targets),
+        updated_snapshots=updated_snapshots,
+        failed_snapshots=len(fetch_targets) - updated_snapshots,
+        error_messages=tuple(error_messages),
+    )
+
+
+def _compact_batch_usage_error_message(name: str, exc: Exception) -> str:
+    message = str(exc)
+    prefix = f"Usage fetch failed for '{name}': "
+    if message.startswith(prefix):
+        return message[len(prefix):]
+    return message
 
 
 def is_kilo_new(ext_sub: str | None, kilo_new_key: str) -> bool:
@@ -335,17 +479,9 @@ def _omp_import_entry_merge_key(entry: Mapping[str, Any]) -> str | None:
     if not isinstance(value, Mapping):
         return None
 
-    explicit_identity_key = entry.get("identity_key")
-    if isinstance(explicit_identity_key, str) and explicit_identity_key:
-        return f"identity:{explicit_identity_key}"
-
-    embedded_identity_key = value.get("identity_key")
-    if isinstance(embedded_identity_key, str) and embedded_identity_key:
-        return f"identity:{embedded_identity_key}"
-
-    identity_key = identity_key_for_value(value)
-    if identity_key:
-        return f"identity:{identity_key}"
+    identity_keys = identity_keys_for_entry(entry)
+    if identity_keys:
+        return f"identity:{identity_keys[0]}"
 
     fingerprint = account_fingerprint(dict(value))
     if fingerprint:
@@ -568,6 +704,120 @@ def refresh_saved_account(
         return (
             f"Renewed tokens for '{name}' "
             f"({refreshed.refreshed_groups} token {group_label}, {refreshed.refreshed_entries} {entry_label})"
+        )
+
+
+def fetch_saved_account_usage(
+    name: str,
+    *,
+    expected_kind: str | None = None,
+    operation_lock=None,
+    load_saved_account_data,
+    write_saved_account_data,
+    fetch_usage_snapshot,
+    user_facing_error_cls,
+) -> SavedAccountUsageFetchResult:
+    with operation_lock or nullcontext():
+        path, account_data, _kind = load_saved_account_data(name, expected_kind=expected_kind)
+        entries = account_data.get("entries", []) if isinstance(account_data, Mapping) else []
+        if not isinstance(entries, list):
+            raise user_facing_error_cls(f"Account '{name}' has an invalid entries payload.")
+        return _fetch_saved_account_usage_from_payload(
+            name=name,
+            path=path,
+            account_data=account_data,
+            entries=entries,
+            write_saved_account_data=write_saved_account_data,
+            fetch_usage_snapshot=fetch_usage_snapshot,
+            user_facing_error_cls=user_facing_error_cls,
+        )
+
+
+def fetch_saved_accounts_usage(
+    *,
+    expected_kind: str,
+    operation_lock=None,
+    list_saved_accounts,
+    load_saved_account_data,
+    write_saved_account_data,
+    fetch_usage_snapshot,
+    user_facing_error_cls,
+) -> SavedAccountsUsageBatchFetchResult:
+    with operation_lock or nullcontext():
+        records = list_saved_accounts(expected_kind)
+        names = [record.get("name") for record in records if isinstance(record, Mapping) and isinstance(record.get("name"), str)]
+        if not names:
+            raise user_facing_error_cls(f"No saved {expected_kind} accounts found.")
+
+        updated_accounts = 0
+        requested_snapshots = 0
+        updated_snapshots = 0
+        error_messages: list[str] = []
+        pending_fetches: list[_PendingSavedAccountUsageFetch] = []
+
+        for name in names:
+            try:
+                path, account_data, _kind = load_saved_account_data(name, expected_kind=expected_kind)
+                entries = account_data.get("entries", []) if isinstance(account_data, Mapping) else []
+                if not isinstance(entries, list):
+                    raise user_facing_error_cls(f"Account '{name}' has an invalid entries payload.")
+
+                account_requested_snapshots = len(_saved_account_usage_fetch_targets(entries))
+                requested_snapshots += account_requested_snapshots
+                pending_fetches.append(
+                    _PendingSavedAccountUsageFetch(
+                        name=name,
+                        path=path,
+                        account_data=account_data,
+                        entries=entries,
+                    )
+                )
+            except Exception as exc:
+                error_messages.append(f"{name}: {_compact_batch_usage_error_message(name, exc)}")
+
+        max_workers = min(MAX_PARALLEL_USAGE_FETCH_WORKERS, len(pending_fetches))
+        if max_workers > 0:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                submitted_fetches = [
+                    (
+                        pending,
+                        executor.submit(
+                            _fetch_saved_account_usage_from_payload,
+                            name=pending.name,
+                            path=pending.path,
+                            account_data=pending.account_data,
+                            entries=pending.entries,
+                            write_saved_account_data=write_saved_account_data,
+                            fetch_usage_snapshot=fetch_usage_snapshot,
+                            user_facing_error_cls=user_facing_error_cls,
+                        ),
+                    )
+                    for pending in pending_fetches
+                ]
+                for pending, future in submitted_fetches:
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        error_messages.append(f"{pending.name}: {_compact_batch_usage_error_message(pending.name, exc)}")
+                        continue
+
+                    updated_accounts += 1
+                    updated_snapshots += result.updated_snapshots
+                    error_messages.extend(f"{pending.name}: {message}" for message in result.error_messages)
+
+        if updated_accounts <= 0:
+            details = error_messages[0] if error_messages else f"No {expected_kind} accounts could be updated."
+            raise user_facing_error_cls(f"Mass usage fetch failed for {expected_kind}: {details}")
+
+        requested_accounts = len(names)
+        return SavedAccountsUsageBatchFetchResult(
+            requested_accounts=requested_accounts,
+            updated_accounts=updated_accounts,
+            failed_accounts=requested_accounts - updated_accounts,
+            requested_snapshots=requested_snapshots,
+            updated_snapshots=updated_snapshots,
+            failed_snapshots=requested_snapshots - updated_snapshots,
+            error_messages=tuple(error_messages),
         )
 
 

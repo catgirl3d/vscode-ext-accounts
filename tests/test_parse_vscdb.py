@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 try:
@@ -382,6 +383,49 @@ class ParseVscdbTests(unittest.TestCase):
             self.assertEqual(db.account_email({"email": "user@example.com"}), "user@example.com")
 
         account_email.assert_called_once_with({"email": "user@example.com"})
+
+    def test_fetch_saved_account_usage_message_uses_compact_snapshot_summary(self):
+        self.patch_db(
+            "account_services",
+            SimpleNamespace(
+                fetch_saved_account_usage=lambda *args, **kwargs: SimpleNamespace(
+                    path="alice.json",
+                    requested_snapshots=2,
+                    updated_snapshots=1,
+                    failed_snapshots=1,
+                    error_messages=(),
+                )
+            ),
+        )
+
+        message = db.fetch_saved_account_usage("alice", expected_kind="codex")
+
+        self.assertEqual(message, "Fetched limits for 'alice' (1/2 snapshot(s)); 1 snapshot(s) failed")
+        self.assertNotIn("meter", message)
+
+    def test_fetch_saved_accounts_usage_message_uses_compact_snapshot_summary(self):
+        self.patch_db(
+            "account_services",
+            SimpleNamespace(
+                fetch_saved_accounts_usage=lambda **kwargs: SimpleNamespace(
+                    requested_accounts=3,
+                    updated_accounts=2,
+                    failed_accounts=1,
+                    requested_snapshots=4,
+                    updated_snapshots=3,
+                    failed_snapshots=1,
+                    error_messages=(),
+                )
+            ),
+        )
+
+        message = db.fetch_saved_accounts_usage("codex")
+
+        self.assertEqual(
+            message,
+            "Fetched limits for codex accounts (2/3 account(s), 3/4 snapshot(s)); 1 account(s) failed; 1 snapshot(s) failed",
+        )
+        self.assertNotIn("meter", message)
 
 
 if __name__ == "__main__":

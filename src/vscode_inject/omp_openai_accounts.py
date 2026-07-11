@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 
 from .jwt_utils import decode_jwt_exp_ms
 from .openai_codex import OPENAI_CODEX_PROVIDER
-from .openai_identity import identity_key_for_value, normalized_email as _normalized_email
+from .openai_identity import identity_key_for_entry, identity_key_for_value, normalized_email as _normalized_email
 
 
 OAUTH_CREDENTIAL_TYPE = "oauth"
@@ -219,13 +219,7 @@ def replace_openai_credentials(
         if not raw_value.get("access") or not raw_value.get("refresh"):
             raise ValueError("OMP entry is missing access_token or refresh_token.")
 
-        identity_key = entry.get("identity_key")
-        if not isinstance(identity_key, str) or not identity_key:
-            embedded_identity_key = value.get("identity_key")
-            if isinstance(embedded_identity_key, str) and embedded_identity_key:
-                identity_key = embedded_identity_key
-            else:
-                identity_key = identity_key_for_value(raw_value)
+        identity_key = identity_key_for_entry(entry) or identity_key_for_value(raw_value)
 
         payloads.append((json.dumps(raw_value, separators=(",", ":"), ensure_ascii=False), identity_key))
 

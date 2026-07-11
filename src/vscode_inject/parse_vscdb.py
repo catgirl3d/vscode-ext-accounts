@@ -21,6 +21,7 @@ from . import omp_openai_accounts as omp_store
 from . import oauth_refresh
 from . import saved_accounts as saved_store
 from . import state_db
+from . import usage_limits
 
 IDE_PATHS = ide_context.default_ide_paths()
 CURRENT_IDE = "vscode"
@@ -723,6 +724,63 @@ def refresh_saved_account(name: str, expected_kind: str | None = None) -> str:
         saved_account_refresh_error_cls=SavedAccountRefreshError,
         persistence_error_cls=RenewedCredentialsPersistenceError,
     )
+
+
+def fetch_saved_account_usage(name: str, expected_kind: str | None = None) -> str:
+    result = account_services.fetch_saved_account_usage(
+        name,
+        expected_kind=expected_kind,
+        operation_lock=SAVED_ACCOUNT_REFRESH_LOCK,
+        load_saved_account_data=_load_saved_account_data,
+        write_saved_account_data=_write_saved_account_data,
+        fetch_usage_snapshot=usage_limits.fetch_openai_usage_snapshot,
+        user_facing_error_cls=UserFacingError,
+    )
+
+    print(f"Fetched limits for '{name}' -> {result.path}")
+    print(f"  snapshots: {result.updated_snapshots}/{result.requested_snapshots}")
+    for error_message in result.error_messages:
+        print(f"  warning: {error_message}")
+
+    message = (
+        f"Fetched limits for '{name}' "
+        f"({result.updated_snapshots}/{result.requested_snapshots} snapshot(s))"
+    )
+    if result.failed_snapshots:
+        message += f"; {result.failed_snapshots} snapshot(s) failed"
+    return message
+
+
+def fetch_saved_accounts_usage(expected_kind: str) -> str:
+    result = account_services.fetch_saved_accounts_usage(
+        expected_kind=expected_kind,
+        operation_lock=SAVED_ACCOUNT_REFRESH_LOCK,
+        list_saved_accounts=list_saved_accounts,
+        load_saved_account_data=_load_saved_account_data,
+        write_saved_account_data=_write_saved_account_data,
+        fetch_usage_snapshot=usage_limits.fetch_openai_usage_snapshot,
+        user_facing_error_cls=UserFacingError,
+    )
+
+    print(f"Fetched limits for {expected_kind} accounts")
+    print(f"  accounts:  {result.updated_accounts}/{result.requested_accounts}")
+    print(f"  snapshots: {result.updated_snapshots}/{result.requested_snapshots}")
+    if result.failed_accounts:
+        print(f"  failed accounts: {result.failed_accounts}")
+    if result.failed_snapshots:
+        print(f"  failed snapshots: {result.failed_snapshots}")
+    for error_message in result.error_messages:
+        print(f"  warning: {error_message}")
+
+    message = (
+        f"Fetched limits for {expected_kind} accounts "
+        f"({result.updated_accounts}/{result.requested_accounts} account(s), {result.updated_snapshots}/{result.requested_snapshots} snapshot(s))"
+    )
+    if result.failed_accounts:
+        message += f"; {result.failed_accounts} account(s) failed"
+    if result.failed_snapshots:
+        message += f"; {result.failed_snapshots} snapshot(s) failed"
+    return message
 
 
 def use_ide_account(

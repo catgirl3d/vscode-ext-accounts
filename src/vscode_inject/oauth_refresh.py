@@ -15,6 +15,7 @@ from .saved_account_status import (
     REFRESH_STATUS_OK,
     REFRESH_STATUS_TERMINAL_ERROR,
 )
+from .time_utils import current_time_iso
 
 
 OPENAI_CODEX_STORAGE_KEY = "openai-codex-oauth-credentials"
@@ -190,10 +191,6 @@ def set_auto_refresh_disabled_group_keys(data: dict[str, Any], keys: set[Refresh
 
 def current_time_ms() -> int:
     return int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
-
-
-def current_time_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def extract_account_id_from_claims(claims: Mapping[str, Any] | None) -> str | None:

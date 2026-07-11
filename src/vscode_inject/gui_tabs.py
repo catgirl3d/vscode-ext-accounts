@@ -2,7 +2,7 @@ import datetime
 import os
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import tkinter as tk
 import tkinter.font as tkfont
@@ -13,6 +13,8 @@ from . import saved_account_status
 
 
 IDE_EXTENSION_ORDER = ("kilocode", "roo-cline", "kilo-new")
+FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60
+WEEKLY_WINDOW_SECONDS = 7 * 24 * 60 * 60
 SUCCESS_GREEN = "#a6e3a1"
 EXPIRED_ROW_TAG = "expired"
 EXPIRED_ROW_FG = "#f38ba8"
@@ -272,6 +274,150 @@ def omp_account_row_tags(data, entries, *, now_ms=None):
     if status == saved_account_status.REFRESH_STATUS_OK:
         return (REFRESH_OK_ROW_TAG,)
     return ()
+
+
+def _limit_numeric_value(limit: Mapping[str, Any] | None, field: str) -> float | None:
+    if not isinstance(limit, Mapping):
+        return None
+    value = limit.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _limit_remaining_percent(limit: Mapping[str, Any] | None) -> float | None:
+    return _limit_numeric_value(limit, "remaining")
+
+
+def _format_limit_percent(value: float | None) -> str:
+    if value is None:
+        return "-"
+    rounded = round(value)
+    if abs(value - rounded) < 1e-9:
+        return str(int(rounded))
+    return f"{value:.1f}".rstrip("0").rstrip(".")
+
+
+def _has_usable_limit_value(limit: Mapping[str, Any] | None) -> bool:
+    return _limit_remaining_percent(limit) is not None
+
+
+def _limit_window_seconds(limit: Mapping[str, Any] | None) -> int | None:
+    value = _limit_numeric_value(limit, "windowSeconds")
+    if value is None:
+        return None
+    return int(value)
+
+
+def _format_window_label(window_seconds: int | None) -> str | None:
+    if window_seconds is None or window_seconds <= 0:
+        return None
+    if window_seconds % (24 * 60 * 60) == 0:
+        return f"{window_seconds // (24 * 60 * 60)}d"
+    if window_seconds % (60 * 60) == 0:
+        return f"{window_seconds // (60 * 60)}h"
+    if window_seconds % 60 == 0:
+        return f"{window_seconds // 60}m"
+    return f"{window_seconds}s"
+
+
+def _limit_percent_text(limit: Mapping[str, Any] | None) -> str | None:
+    percent = _format_limit_percent(_limit_remaining_percent(limit))
+    if percent == "-":
+        return None
+    return f"{percent}%"
+
+
+def _standard_limit(limit_windows: Sequence[Mapping[str, Any]], target_window_seconds: int) -> tuple[int, Mapping[str, Any]] | None:
+    for index, limit_window in enumerate(limit_windows):
+        if _limit_window_seconds(limit_window) == target_window_seconds and _has_usable_limit_value(limit_window):
+            return index, limit_window
+    return None
+
+
+def format_usage_limits_snapshot(snapshot: Mapping[str, Any] | None) -> str:
+    if not isinstance(snapshot, Mapping):
+        return "-"
+    raw_limits = snapshot.get("limits")
+    if not isinstance(raw_limits, list):
+        return "-"
+
+    limit_windows = [limit for limit in raw_limits if isinstance(limit, Mapping) and _has_usable_limit_value(limit)]
+    if not limit_windows:
+        return "-"
+
+    display_parts: list[tuple[str, str]] = []
+    used_indices: set[int] = set()
+    for label, target_window_seconds in (("5h", FIVE_HOUR_WINDOW_SECONDS), ("7d", WEEKLY_WINDOW_SECONDS)):
+        selected_limit = _standard_limit(limit_windows, target_window_seconds)
+        if selected_limit is None:
+            continue
+        index, limit_window = selected_limit
+        used_indices.add(index)
+        percent_text = _limit_percent_text(limit_window)
+        if percent_text:
+            display_parts.append((label, percent_text))
+
+    remaining_limits = [
+        limit_window for index, limit_window in enumerate(limit_windows) if index not in used_indices
+    ]
+    remaining_limits.sort(
+        key=lambda limit_window: (
+            _limit_window_seconds(limit_window) is None,
+            _limit_window_seconds(limit_window) or 0,
+        )
+    )
+    for limit_window in remaining_limits:
+        label = _format_window_label(_limit_window_seconds(limit_window)) or "limit"
+        percent_text = _limit_percent_text(limit_window)
+        if percent_text:
+            display_parts.append((label, percent_text))
+
+    if not display_parts:
+        return "-"
+    if len(display_parts) == 2 and [label for label, _percent_text in display_parts] == ["5h", "7d"]:
+        return " / ".join(percent_text for _label, percent_text in display_parts)
+    if len(display_parts) == 1:
+        label, percent_text = display_parts[0]
+        if label not in {"5h", "7d"}:
+            return f"{percent_text} [{label}]"
+        return f"{percent_text} / {label}"
+    return " · ".join(f"{percent_text} / {label}" for label, percent_text in display_parts)
+
+
+def summarize_usage_limits(data: Mapping[str, Any], entries: Sequence[Mapping[str, Any]]) -> str:
+    raw_snapshots = data.get("usage_snapshots") if isinstance(data, Mapping) else None
+    if not isinstance(raw_snapshots, Mapping):
+        return "-"
+
+    summaries: list[str] = []
+    seen_keys: set[str] = set()
+    for entry in entries:
+        value = entry.get("value") if isinstance(entry, Mapping) else None
+        if not isinstance(value, Mapping):
+            continue
+
+        snapshot = None
+        snapshot_key = None
+        for candidate_key in account_services.saved_account_usage_snapshot_keys(entry):
+            if candidate_key in seen_keys:
+                snapshot_key = candidate_key
+                break
+            candidate_snapshot = raw_snapshots.get(candidate_key)
+            if isinstance(candidate_snapshot, Mapping):
+                snapshot_key = candidate_key
+                snapshot = candidate_snapshot
+                break
+
+        if not isinstance(snapshot_key, str) or not snapshot_key:
+            continue
+        seen_keys.add(snapshot_key)
+
+        summary = format_usage_limits_snapshot(snapshot)
+        if summary != "-" and summary not in summaries:
+            summaries.append(summary)
+
+    return ", ".join(summaries) if summaries else "-"
 
 
 def selected_name(tree, empty_message):
@@ -712,6 +858,25 @@ class SavedAccountsTreeTab:
         )
         self.services.run_guarded(refresh_selected_account, log_prefix="manual-refresh")
 
+    def on_fetch_usage_selected(self):
+        name = self.selected_saved_account_name()
+        if not name:
+            return
+        fetch_limits = partial(
+            self.services.db.fetch_saved_account_usage,
+            name,
+            expected_kind=self._require_saved_account_config_value("expected_kind"),
+        )
+        self.services.run_guarded(fetch_limits)
+
+    def on_fetch_usage_all(self):
+        expected_kind = self._require_saved_account_config_value("expected_kind")
+        fetch_all_limits = partial(
+            self.services.db.fetch_saved_accounts_usage,
+            expected_kind,
+        )
+        self.services.run_guarded(fetch_all_limits)
+
     def on_refresh(self):
         self.services.refresh_all()
         self.services.set_status("Reloaded view", True)
@@ -851,10 +1016,11 @@ class IdeAccountsTab(SavedAccountsTreeTab):
 
         self._build_saved_account_tree(
             (
-                SavedAccountTreeColumn("name", "Name", 225, anchor="w"),
+                SavedAccountTreeColumn("name", "Name", 210, anchor="w"),
                 SavedAccountTreeColumn("email", "Email", 220, anchor="w"),
-                SavedAccountTreeColumn("ext", "Ext", 75),
+                SavedAccountTreeColumn("ext", "Ext", 60),
                 SavedAccountTreeColumn("accountIds", "Account IDs", 100),
+                SavedAccountTreeColumn("limits", "Limits", 190),
                 SavedAccountTreeColumn("saved", "Saved", 112),
                 SavedAccountTreeColumn("expires", "Expires", 80),
                 SavedAccountTreeColumn("active", "Active", 60),
@@ -866,7 +1032,9 @@ class IdeAccountsTab(SavedAccountsTreeTab):
             (
                 SavedAccountActionButton("▶ Use selected", "on_use", accent=True),
                 SavedAccountActionButton("💾 Save current", "on_save"),
-                SavedAccountActionButton("📥 Import account", "on_import_clipboard"),
+                SavedAccountActionButton("📥 Import", "on_import_clipboard"),
+                SavedAccountActionButton("📊 Fetch", "on_fetch_usage_selected"),
+                SavedAccountActionButton("📊 Fetch all", "on_fetch_usage_all"),
                 SavedAccountActionButton("↻ Renew tokens", "on_refresh_selected", separator_before=True),
                 SavedAccountActionButton("✏ Rename", "on_rename"),
                 SavedAccountActionButton("🗑 Delete", "on_delete"),
@@ -1011,12 +1179,13 @@ class IdeAccountsTab(SavedAccountsTreeTab):
         expires_ms = first_expires_ms(ide_entries)
         expires = format_saved_expires(expires_ms)
         accounts_short = summarize_account_ids(ide_entries)
+        limits = summarize_usage_limits(data, ide_entries)
         refresh_status = format_refresh_status(data.get("refresh_status"))
         active_tags = self._ide_active_tags(ide_entries, refresh_state)
         active = "+".join(active_tags) if active_tags else "-"
         return SavedAccountTreeRow(
             iid=name,
-            values=(name, email, ext_tag, accounts_short, saved_at, expires, active, refresh_status),
+            values=(name, email, ext_tag, accounts_short, limits, saved_at, expires, active, refresh_status),
             tags=account_row_tags(data, expires_ms),
         )
 
@@ -1171,15 +1340,16 @@ class CodexTab(SavedAccountsTreeTab):
             fg=fg,
             justify="left",
             anchor="w",
-            wraplength=560,
+            wraplength=430,
             font=("Segoe UI", 9),
         ).pack(fill="x", pady=(4, 0))
 
         self._build_saved_account_tree(
             (
-                SavedAccountTreeColumn("name", "Name", 150, anchor="w"),
+                SavedAccountTreeColumn("name", "Name", 190, anchor="w"),
                 SavedAccountTreeColumn("email", "Email", 220, anchor="w"),
                 SavedAccountTreeColumn("accountId", "Account ID", 180),
+                SavedAccountTreeColumn("limits", "Limits", 190),
                 SavedAccountTreeColumn("saved", "Saved", 120),
                 SavedAccountTreeColumn("expires", "Expires", 100),
                 SavedAccountTreeColumn("active", "Active", 90),
@@ -1189,9 +1359,11 @@ class CodexTab(SavedAccountsTreeTab):
 
         self._build_saved_account_actions(
             (
-                SavedAccountActionButton("▶ Use selected Codex", "on_use", accent=True),
-                SavedAccountActionButton("💾 Save current Codex", "on_save"),
+                SavedAccountActionButton("▶ Use selected", "on_use", accent=True),
+                SavedAccountActionButton("💾 Save current", "on_save"),
                 SavedAccountActionButton("📥 Import Codex auth", "on_import"),
+                SavedAccountActionButton("📊 Fetch", "on_fetch_usage_selected"),
+                SavedAccountActionButton("📊 Fetch all", "on_fetch_usage_all"),
                 SavedAccountActionButton("↻ Renew tokens", "on_refresh_selected", separator_before=True),
                 SavedAccountActionButton("✏ Rename", "on_rename"),
                 SavedAccountActionButton("🗑 Delete", "on_delete"),
@@ -1231,6 +1403,7 @@ class CodexTab(SavedAccountsTreeTab):
         saved_at = format_saved_at(data)
         email = self.services.db.account_email(value) or "-"
         account_id = shorten_account_id(value.get("accountId"))
+        limits = summarize_usage_limits(data, [codex_entry])
         expires_ms = value.get("expires") if isinstance(value.get("expires"), int) else 0
         expires = format_saved_expires(expires_ms)
         current_fp = refresh_state["current_fingerprint"]
@@ -1238,7 +1411,7 @@ class CodexTab(SavedAccountsTreeTab):
         refresh_status = format_refresh_status(data.get("refresh_status"))
         return SavedAccountTreeRow(
             iid=name,
-            values=(name, email, account_id, saved_at, expires, active, refresh_status),
+            values=(name, email, account_id, limits, saved_at, expires, active, refresh_status),
             tags=account_row_tags(data, expires_ms),
         )
 
@@ -1335,6 +1508,7 @@ class OmpOpenAITab(SavedAccountsTreeTab):
             (
                 SavedAccountTreeColumn("name", "Name", 180, anchor="w"),
                 SavedAccountTreeColumn("accountIds", "Account IDs", 180),
+                SavedAccountTreeColumn("limits", "Limits", 260),
                 SavedAccountTreeColumn("saved", "Saved", 120),
                 SavedAccountTreeColumn("expires", "Expires", 100),
                 SavedAccountTreeColumn("next", "Next", 100),
@@ -1345,10 +1519,12 @@ class OmpOpenAITab(SavedAccountsTreeTab):
 
         self._build_saved_account_actions(
             (
-                SavedAccountActionButton("▶ Use selected OMP", "on_use", accent=True),
-                SavedAccountActionButton("💾 Save current OMP", "on_save"),
+                SavedAccountActionButton("▶ Use selected", "on_use", accent=True),
+                SavedAccountActionButton("💾 Save current", "on_save"),
                 SavedAccountActionButton("📥 Import account", "on_import_new"),
                 SavedAccountActionButton("➕ Add to selected", "on_import_append"),
+                SavedAccountActionButton("📊 Fetch", "on_fetch_usage_selected"),
+                SavedAccountActionButton("📊 Fetch all", "on_fetch_usage_all"),
                 SavedAccountActionButton("↻ Renew tokens", "on_refresh_selected", separator_before=True),
                 SavedAccountActionButton("✏ Rename", "on_rename"),
                 SavedAccountActionButton("🗑 Delete", "on_delete"),
@@ -1403,6 +1579,7 @@ class OmpOpenAITab(SavedAccountsTreeTab):
         now_ms = current_time_ms()
         saved_at = format_saved_at(data)
         account_ids = summarize_account_ids(omp_entries)
+        limits = summarize_usage_limits(data, omp_entries)
         expires = format_omp_expires_status(omp_entries, now_ms=now_ms)
         next_expiry = format_omp_next_expires(omp_entries, now_ms=now_ms)
         current_fingerprints = refresh_state["fingerprints"]
@@ -1410,7 +1587,7 @@ class OmpOpenAITab(SavedAccountsTreeTab):
         refresh_status = format_refresh_status(data.get("refresh_status"))
         return SavedAccountTreeRow(
             iid=name,
-            values=(name, account_ids, saved_at, expires, next_expiry, active, refresh_status),
+            values=(name, account_ids, limits, saved_at, expires, next_expiry, active, refresh_status),
             tags=omp_account_row_tags(data, omp_entries, now_ms=now_ms),
         )
 
