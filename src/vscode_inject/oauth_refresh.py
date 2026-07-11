@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 from urllib import error, parse, request
 
+from .openai_codex import OPENAI_CODEX_PROVIDER
 from .saved_account_status import (
     REFRESH_STATUS_ERROR,
     REFRESH_STATUS_OK,
@@ -16,7 +17,6 @@ from .saved_account_status import (
 )
 
 
-OPENAI_CODEX_PROVIDER = "openai-codex"
 OPENAI_CODEX_STORAGE_KEY = "openai-codex-oauth-credentials"
 OPENAI_CODEX_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
 OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"

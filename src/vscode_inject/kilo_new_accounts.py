@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 
+from .openai_codex import OPENAI_CODEX_PROVIDER
+
 
 def read_kilo_auth(auth_path: str) -> dict:
     if not os.path.exists(auth_path):
@@ -30,7 +32,7 @@ def to_kilo_new_format(value: dict) -> dict:
 
 def from_kilo_new_format(value: dict) -> dict:
     return {
-        "type": "openai-codex",
+        "type": OPENAI_CODEX_PROVIDER,
         "access_token": value.get("access", ""),
         "refresh_token": value.get("refresh", ""),
         "expires": value.get("expires", 0),

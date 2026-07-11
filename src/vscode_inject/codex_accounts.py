@@ -3,6 +3,8 @@ import datetime
 import json
 import os
 
+from .openai_codex import OPENAI_CODEX_PROVIDER
+
 
 def decode_jwt_exp_ms(token: str | None) -> int:
     if not token:
@@ -96,7 +98,7 @@ def from_codex_format(value: dict) -> dict:
         expires_ms = decode_jwt_exp_ms(access_token_str)
 
     return {
-        "type": "openai-codex",
+        "type": OPENAI_CODEX_PROVIDER,
         "access_token": access_token_str,
         "refresh_token": refresh_token_str,
         "expires": expires_ms,

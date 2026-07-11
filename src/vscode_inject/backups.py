@@ -25,6 +25,29 @@ def default_backup_zip_path(project_root: str, prefix: str, current_ide: str) ->
     return os.path.join(backups_dir(project_root), f"{prefix}_{current_ide.replace(' ', '_')}_{ts}.zip")
 
 
+def _omp_agent_db_targets(omp_agent_db_path: str, archive_prefix: str) -> list[dict[str, object]]:
+    return [
+        {
+            "source": omp_agent_db_path,
+            "archive_path": f"{archive_prefix}/agent.db",
+            "label": "OMP agent.db",
+            "required": False,
+        },
+        {
+            "source": omp_agent_db_path + "-wal",
+            "archive_path": f"{archive_prefix}/agent.db-wal",
+            "label": "OMP agent.db-wal",
+            "required": False,
+        },
+        {
+            "source": omp_agent_db_path + "-shm",
+            "archive_path": f"{archive_prefix}/agent.db-shm",
+            "label": "OMP agent.db-shm",
+            "required": False,
+        },
+    ]
+
+
 def full_backup_targets(
     ide_paths: Mapping[str, Mapping[str, object]],
     current_ide: str,
@@ -70,28 +93,7 @@ def full_backup_targets(
         }
     )
     if omp_agent_db_path:
-        targets.extend(
-            [
-                {
-                    "source": omp_agent_db_path,
-                    "archive_path": "shared/omp/agent.db",
-                    "label": "OMP agent.db",
-                    "required": False,
-                },
-                {
-                    "source": omp_agent_db_path + "-wal",
-                    "archive_path": "shared/omp/agent.db-wal",
-                    "label": "OMP agent.db-wal",
-                    "required": False,
-                },
-                {
-                    "source": omp_agent_db_path + "-shm",
-                    "archive_path": "shared/omp/agent.db-shm",
-                    "label": "OMP agent.db-shm",
-                    "required": False,
-                },
-            ]
-        )
+        targets.extend(_omp_agent_db_targets(omp_agent_db_path, "shared/omp"))
     return targets
 
 
@@ -146,28 +148,7 @@ def prewrite_backup_targets(
             }
         )
     if include_omp and omp_agent_db_path:
-        targets.extend(
-            [
-                {
-                    "source": omp_agent_db_path,
-                    "archive_path": "prewrite/shared/omp/agent.db",
-                    "label": "OMP agent.db",
-                    "required": False,
-                },
-                {
-                    "source": omp_agent_db_path + "-wal",
-                    "archive_path": "prewrite/shared/omp/agent.db-wal",
-                    "label": "OMP agent.db-wal",
-                    "required": False,
-                },
-                {
-                    "source": omp_agent_db_path + "-shm",
-                    "archive_path": "prewrite/shared/omp/agent.db-shm",
-                    "label": "OMP agent.db-shm",
-                    "required": False,
-                },
-            ]
-        )
+        targets.extend(_omp_agent_db_targets(omp_agent_db_path, "prewrite/shared/omp"))
     return targets
 
 

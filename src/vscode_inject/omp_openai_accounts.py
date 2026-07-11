@@ -5,8 +5,9 @@ import os
 import sqlite3
 from typing import Any, Mapping, Sequence
 
+from .openai_codex import OPENAI_CODEX_PROVIDER
 
-OPENAI_CODEX_PROVIDER = "openai-codex"
+
 OAUTH_CREDENTIAL_TYPE = "oauth"
 REPLACED_DISABLED_CAUSE = "replaced by vscode-ext-accounts"
 
