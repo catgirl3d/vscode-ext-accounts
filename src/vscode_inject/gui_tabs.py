@@ -16,6 +16,8 @@ IDE_EXTENSION_ORDER = ("kilocode", "roo-cline", "kilo-new")
 SUCCESS_GREEN = "#a6e3a1"
 EXPIRED_ROW_TAG = "expired"
 EXPIRED_ROW_FG = "#f38ba8"
+PARTIAL_EXPIRED_ROW_TAG = "partial_expired"
+PARTIAL_EXPIRED_ROW_FG = "#f9e2af"
 REFRESH_OK_ROW_TAG = "refresh_ok"
 REFRESH_ERROR_ROW_TAG = "refresh_error"
 REFRESH_ERROR_ROW_FG = "#fab387"
@@ -195,6 +197,69 @@ def first_expires(entries, skip_keys=None):
 
 def first_expires_ms(entries, skip_keys=None):
     return account_services.first_expires_ms(entries, skip_keys=skip_keys)
+
+
+def next_expires_ms(entries, *, now_ms=None, skip_keys=None):
+    current_ms = now_ms if now_ms is not None else current_time_ms()
+    skip_key_set = set(skip_keys or [])
+    future_expires: list[int] = []
+    for entry in entries:
+        if entry.get("key") in skip_key_set:
+            continue
+        value = entry.get("value", {})
+        if not isinstance(value, dict):
+            continue
+        expires_ms = value.get("expires")
+        if isinstance(expires_ms, int) and expires_ms > current_ms:
+            future_expires.append(expires_ms)
+    return min(future_expires, default=0)
+
+
+def omp_expiration_counts(entries, *, now_ms=None, skip_keys=None) -> tuple[int, int]:
+    current_ms = now_ms if now_ms is not None else current_time_ms()
+    skip_key_set = set(skip_keys or [])
+    total = 0
+    expired = 0
+    for entry in entries:
+        if entry.get("key") in skip_key_set:
+            continue
+        value = entry.get("value", {})
+        if not isinstance(value, dict):
+            continue
+        total += 1
+        expires_ms = value.get("expires")
+        if isinstance(expires_ms, int) and expires_ms > 0 and expires_ms <= current_ms:
+            expired += 1
+    return total, expired
+
+
+def format_omp_expires_status(entries, *, now_ms=None, skip_keys=None):
+    total, expired = omp_expiration_counts(entries, now_ms=now_ms, skip_keys=skip_keys)
+    if total <= 0:
+        return "-"
+    return f"{expired}/{total} expired"
+
+
+def format_omp_next_expires(entries, *, now_ms=None, skip_keys=None):
+    next_ms = next_expires_ms(entries, now_ms=now_ms, skip_keys=skip_keys)
+    formatted = format_expires_ms(next_ms)
+    return formatted or "-"
+
+
+def omp_account_row_tags(data, entries, *, now_ms=None):
+    status = data.get("refresh_status") if isinstance(data, dict) else None
+    if status == saved_account_status.REFRESH_STATUS_TERMINAL_ERROR:
+        return (TERMINAL_REFRESH_ERROR_ROW_TAG,)
+    if status == saved_account_status.REFRESH_STATUS_ERROR:
+        return (REFRESH_ERROR_ROW_TAG,)
+    total, expired = omp_expiration_counts(entries, now_ms=now_ms)
+    if total > 0 and expired >= total:
+        return (EXPIRED_ROW_TAG,)
+    if expired > 0:
+        return (PARTIAL_EXPIRED_ROW_TAG,)
+    if status == saved_account_status.REFRESH_STATUS_OK:
+        return (REFRESH_OK_ROW_TAG,)
+    return ()
 
 
 def selected_name(tree, empty_message):
@@ -517,6 +582,7 @@ class SavedAccountsTreeTab:
 
         self.tree.tag_configure(REFRESH_OK_ROW_TAG, foreground=SUCCESS_GREEN)
         self.tree.tag_configure(EXPIRED_ROW_TAG, foreground=EXPIRED_ROW_FG)
+        self.tree.tag_configure(PARTIAL_EXPIRED_ROW_TAG, foreground=PARTIAL_EXPIRED_ROW_FG)
         self.tree.tag_configure(REFRESH_ERROR_ROW_TAG, foreground=REFRESH_ERROR_ROW_FG)
         self.tree.tag_configure(TERMINAL_REFRESH_ERROR_ROW_TAG, foreground=TERMINAL_REFRESH_ERROR_ROW_FG)
         self.context_menu = tk.Menu(self.tree, tearoff=False)
@@ -1255,6 +1321,7 @@ class OmpOpenAITab(SavedAccountsTreeTab):
                 SavedAccountTreeColumn("accountIds", "Account IDs", 180),
                 SavedAccountTreeColumn("saved", "Saved", 120),
                 SavedAccountTreeColumn("expires", "Expires", 100),
+                SavedAccountTreeColumn("next", "Next", 100),
                 SavedAccountTreeColumn("active", "Active", 90),
                 SavedAccountTreeColumn("status", "Status", 90),
             )
@@ -1317,17 +1384,18 @@ class OmpOpenAITab(SavedAccountsTreeTab):
         if not omp_entries:
             return None
 
+        now_ms = current_time_ms()
         saved_at = format_saved_at(data)
         account_ids = summarize_account_ids(omp_entries)
-        expires_ms = first_expires_ms(omp_entries)
-        expires = format_saved_expires(expires_ms)
+        expires = format_omp_expires_status(omp_entries, now_ms=now_ms)
+        next_expiry = format_omp_next_expires(omp_entries, now_ms=now_ms)
         current_fingerprints = refresh_state["fingerprints"]
         active = "active" if current_fingerprints and self._saved_fingerprint_tuple(omp_entries) == current_fingerprints else "-"
         refresh_status = format_refresh_status(data.get("refresh_status"))
         return SavedAccountTreeRow(
             iid=name,
-            values=(name, account_ids, saved_at, expires, active, refresh_status),
-            tags=account_row_tags(data, expires_ms),
+            values=(name, account_ids, saved_at, expires, next_expiry, active, refresh_status),
+            tags=omp_account_row_tags(data, omp_entries, now_ms=now_ms),
         )
 
     def refresh(self):

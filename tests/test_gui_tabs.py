@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 from vscode_inject import gui_tabs
-from vscode_inject.gui_tabs import CodexTab, EXPIRED_ROW_TAG, GuiServices, IdeAccountsTab, OmpOpenAITab
+from vscode_inject.gui_tabs import CodexTab, EXPIRED_ROW_TAG, GuiServices, IdeAccountsTab, OmpOpenAITab, PARTIAL_EXPIRED_ROW_TAG
 from vscode_inject import parse_vscdb as db
 
 
@@ -59,14 +59,69 @@ class GuiTabsHelperTests(unittest.TestCase):
             gui_tabs.account_row_tags({}, 1_000, now_ms=2_000),
             (EXPIRED_ROW_TAG,),
         )
-        self.assertEqual(gui_tabs.shorten_account_id("abcdefghijklmnop", limit=8), "abcdefgh...")
-        self.assertEqual(gui_tabs.shorten_account_id(None), "?")
 
         entries = [
             {"key": "skip-me", "value": {"accountId": "acct-skip"}},
             {"key": "keep-me", "value": {"accountId": "acct-keep-123456"}},
             {"key": "no-id", "value": {}},
         ]
+        self.assertEqual(gui_tabs.next_expires_ms(entries, now_ms=1_000, skip_keys={"skip-me"}), 0)
+        self.assertEqual(
+            gui_tabs.next_expires_ms(
+                [
+                    {"key": "a", "value": {"expires": 500}},
+                    {"key": "b", "value": {"expires": 5_000}},
+                    {"key": "c", "value": {"expires": 2_000}},
+                ],
+                now_ms=1_000,
+            ),
+            2_000,
+        )
+        self.assertEqual(
+            gui_tabs.omp_expiration_counts(
+                [
+                    {"key": "a", "value": {"expires": 500}},
+                    {"key": "b", "value": {"expires": 5_000}},
+                    {"key": "c", "value": {"expires": 0}},
+                ],
+                now_ms=1_000,
+            ),
+            (3, 1),
+        )
+        self.assertEqual(
+            gui_tabs.format_omp_expires_status(
+                [
+                    {"key": "a", "value": {"expires": 500}},
+                    {"key": "b", "value": {"expires": 5_000}},
+                    {"key": "c", "value": {"expires": 0}},
+                ],
+                now_ms=1_000,
+            ),
+            "1/3 expired",
+        )
+        self.assertEqual(
+            gui_tabs.format_omp_next_expires(
+                [
+                    {"key": "a", "value": {"expires": 500}},
+                    {"key": "b", "value": {"expires": 86_400_000}},
+                ],
+                now_ms=1_000,
+            ),
+            "1970-01-02",
+        )
+        self.assertEqual(
+            gui_tabs.omp_account_row_tags(
+                {},
+                [
+                    {"key": "a", "value": {"expires": 500}},
+                    {"key": "b", "value": {"expires": 5_000}},
+                ],
+                now_ms=1_000,
+            ),
+            (PARTIAL_EXPIRED_ROW_TAG,),
+        )
+        self.assertEqual(gui_tabs.shorten_account_id("abcdefghijklmnop", limit=8), "abcdefgh...")
+        self.assertEqual(gui_tabs.shorten_account_id(None), "?")
         self.assertEqual(gui_tabs.summarize_account_ids(entries, skip_keys={"skip-me"}), "acct-kee...")
         self.assertEqual(gui_tabs.summarize_account_ids([{"key": "no-id", "value": {}}]), "?")
         self.assertEqual(gui_tabs.first_expires_ms(entries, skip_keys={"skip-me"}), 0)
@@ -836,9 +891,15 @@ class OmpOpenAITabTests(unittest.TestCase):
         current_accounts = [
             {
                 "key": "omp://openai",
-                "accountId": "acct-omp-1234567890",
-                "fingerprint": "refresh-omp",
-                "expires": 123,
+                "accountId": "acct-expired-1234567890",
+                "fingerprint": "refresh-expired",
+                "expires": 1_000,
+            },
+            {
+                "key": "omp://openai",
+                "accountId": "acct-future-0987654321",
+                "fingerprint": "refresh-future",
+                "expires": 4_102_444_800_000,
             }
         ]
         saved_records = [
@@ -852,9 +913,18 @@ class OmpOpenAITabTests(unittest.TestCase):
                             "key": "omp://openai",
                             "value": {
                                 "type": "openai-codex",
-                                "accountId": "acct-omp-1234567890",
-                                "refresh_token": "refresh-omp",
-                                "expires": 123,
+                                "accountId": "acct-expired-1234567890",
+                                "refresh_token": "refresh-expired",
+                                "expires": 1_000,
+                            },
+                        },
+                        {
+                            "key": "omp://openai",
+                            "value": {
+                                "type": "openai-codex",
+                                "accountId": "acct-future-0987654321",
+                                "refresh_token": "refresh-future",
+                                "expires": 4_102_444_800_000,
                             },
                         }
                     ]
@@ -895,12 +965,16 @@ class OmpOpenAITabTests(unittest.TestCase):
         services = self.make_services(self.make_db())
         tab = OmpOpenAITab(notebook, services)
 
-        tab.refresh()
+        with patch("vscode_inject.gui_tabs.current_time_ms", return_value=2_000):
+            tab.refresh()
 
         row_values = tab.tree.item("alice", "values")
         self.assertEqual(row_values[0], "alice")
-        self.assertEqual(row_values[4], "active")
-        self.assertEqual(tab.current_value.cget("text"), "acct-omp...")
+        self.assertEqual(row_values[3], "1/2 expired")
+        self.assertEqual(row_values[4], "2100-01-01")
+        self.assertEqual(row_values[5], "active")
+        self.assertEqual(tab.tree.item("alice", "tags"), (PARTIAL_EXPIRED_ROW_TAG,))
+        self.assertEqual(tab.current_value.cget("text"), "acct-exp..., acct-fut...")
 
     def test_omp_tab_actions_call_backend_contracts(self):
         notebook = ttk.Notebook(self.root)
