@@ -26,7 +26,7 @@ REFRESH_ERROR_ROW_FG = "#fab387"
 TERMINAL_REFRESH_ERROR_ROW_TAG = "terminal_refresh_error"
 TERMINAL_REFRESH_ERROR_ROW_FG = "#f38ba8"
 SECTION_BG = "#181825"
-RUNTIME_STATUS_VARIANTS = ("running !", "closed OK")
+RUNTIME_STATUS_VARIANTS = ("RUNNING", "CLOSED -- OK")
 LAYOUT_WIDTH_PAD_PX = 4
 ACCOUNT_TREE_NAME_WIDTH = 210
 ACCOUNT_TREE_EMAIL_WIDTH = 220
@@ -1124,7 +1124,8 @@ class IdeAccountsTab(SavedAccountsTreeTab):
             return False
 
         ide_cfg = self.services.db.IDE_PATHS[current_ide]
-        state_str = "running !" if running else "closed OK"
+
+        state_str = "RUNNING" if running else "CLOSED -- OK"
         state_color = "#c0392b" if running else SUCCESS_GREEN
         self.ide_state_label.config(text=f"{ide_cfg['label']}: {state_str}", fg=state_color)
         self.update_run_button_visibility(running)
