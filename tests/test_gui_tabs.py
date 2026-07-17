@@ -21,6 +21,11 @@ def button_texts(widget: tk.Misc) -> list[str]:
     return [child.cget("text") for child in widget.winfo_children() if isinstance(child, tk.Button)]
 
 
+def assert_tree_column_widths(test_case: unittest.TestCase, tree: ttk.Treeview, expected: dict[str, int]) -> None:
+    for column_name, width in expected.items():
+        test_case.assertEqual(tree.column(column_name, "width"), width)
+
+
 class GuiTabsHelperTests(unittest.TestCase):
     def test_formatting_and_selection_helpers_cover_edge_cases(self):
         self.assertIsInstance(gui_tabs.current_time_ms(), int)
@@ -347,6 +352,26 @@ class IdeAccountsTabTests(unittest.TestCase):
         self.assertIn("📊 Fetch all", button_texts(tab.btn_frame))
         self.assertIn("↻ Renew tokens", button_texts(tab.btn_frame))
         self.assertIn("⟳ Reload", button_texts(tab.btn_frame))
+
+    def test_ide_tree_columns_use_named_widths(self):
+        notebook = ttk.Notebook(self.root)
+        tab = IdeAccountsTab(notebook, self.make_services(self.make_db(running=False)))
+
+        assert_tree_column_widths(
+            self,
+            tab.tree,
+            {
+                "name": gui_tabs.ACCOUNT_TREE_NAME_WIDTH,
+                "email": gui_tabs.ACCOUNT_TREE_EMAIL_WIDTH,
+                "ext": gui_tabs.ACCOUNT_TREE_EXTENSION_WIDTH,
+                "accountIds": gui_tabs.ACCOUNT_TREE_ACCOUNT_ID_WIDTH,
+                "limits": gui_tabs.ACCOUNT_TREE_LIMITS_WIDTH,
+                "saved": gui_tabs.ACCOUNT_TREE_SAVED_WIDTH,
+                "expires": gui_tabs.ACCOUNT_TREE_EXPIRES_WIDTH,
+                "active": gui_tabs.ACCOUNT_TREE_ACTIVE_WIDTH,
+                "status": gui_tabs.ACCOUNT_TREE_STATUS_WIDTH,
+            },
+        )
 
     def test_run_button_is_hidden_while_selected_ide_is_running(self):
         notebook = ttk.Notebook(self.root)
@@ -1112,6 +1137,20 @@ class OmpOpenAITabTests(unittest.TestCase):
         services = self.make_services(self.make_db())
         tab = OmpOpenAITab(notebook, services)
 
+        assert_tree_column_widths(
+            self,
+            tab.tree,
+            {
+                "name": gui_tabs.ACCOUNT_TREE_NAME_WIDTH,
+                "accountIds": gui_tabs.ACCOUNT_TREE_ACCOUNT_ID_WIDTH,
+                "limits": gui_tabs.ACCOUNT_TREE_LIMITS_WIDTH,
+                "saved": gui_tabs.ACCOUNT_TREE_SAVED_WIDTH,
+                "expires": gui_tabs.ACCOUNT_TREE_EXPIRES_WIDTH,
+                "next": gui_tabs.ACCOUNT_TREE_NEXT_WIDTH,
+                "active": gui_tabs.ACCOUNT_TREE_ACTIVE_WIDTH,
+                "status": gui_tabs.ACCOUNT_TREE_STATUS_WIDTH,
+            },
+        )
         with patch("vscode_inject.gui_tabs.current_time_ms", return_value=2_000):
             tab.refresh()
 
@@ -1231,6 +1270,20 @@ class CodexTabTests(unittest.TestCase):
         notebook = ttk.Notebook(self.root)
         tab = CodexTab(notebook, services)
 
+        assert_tree_column_widths(
+            self,
+            tab.tree,
+            {
+                "name": gui_tabs.ACCOUNT_TREE_NAME_WIDTH,
+                "email": gui_tabs.ACCOUNT_TREE_EMAIL_WIDTH,
+                "accountId": gui_tabs.ACCOUNT_TREE_ACCOUNT_ID_WIDTH,
+                "limits": gui_tabs.ACCOUNT_TREE_LIMITS_WIDTH,
+                "saved": gui_tabs.ACCOUNT_TREE_SAVED_WIDTH,
+                "expires": gui_tabs.ACCOUNT_TREE_EXPIRES_WIDTH,
+                "active": gui_tabs.ACCOUNT_TREE_ACTIVE_WIDTH,
+                "status": gui_tabs.ACCOUNT_TREE_STATUS_WIDTH,
+            },
+        )
         self.assertEqual(tab.context_menu.entrycget(0, "label"), "Use selected")
         self.assertEqual(tab.context_menu.entrycget(1, "label"), "Rename")
         self.assertEqual(button_texts(tab.btn_frame)[:3], ["▶ Use selected", "💾 Save current", "📥 Import Codex auth"])

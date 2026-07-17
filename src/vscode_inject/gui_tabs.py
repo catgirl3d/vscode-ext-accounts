@@ -28,6 +28,16 @@ TERMINAL_REFRESH_ERROR_ROW_FG = "#f38ba8"
 SECTION_BG = "#181825"
 RUNTIME_STATUS_VARIANTS = ("running !", "closed OK")
 LAYOUT_WIDTH_PAD_PX = 4
+ACCOUNT_TREE_NAME_WIDTH = 210
+ACCOUNT_TREE_EMAIL_WIDTH = 220
+ACCOUNT_TREE_EXTENSION_WIDTH = 60
+ACCOUNT_TREE_ACCOUNT_ID_WIDTH = 100
+ACCOUNT_TREE_LIMITS_WIDTH = 190
+ACCOUNT_TREE_SAVED_WIDTH = 112
+ACCOUNT_TREE_EXPIRES_WIDTH = 80
+ACCOUNT_TREE_ACTIVE_WIDTH = 60
+ACCOUNT_TREE_STATUS_WIDTH = 60
+ACCOUNT_TREE_NEXT_WIDTH = ACCOUNT_TREE_EXPIRES_WIDTH
 IDE_ACCOUNT_IMPORT_HINT = (
     "Paste a JSON object or a one-item JSON array. Required fields: "
     "access_token, refresh_token, id_token. Optional: account_id and expires."
@@ -1016,15 +1026,15 @@ class IdeAccountsTab(SavedAccountsTreeTab):
 
         self._build_saved_account_tree(
             (
-                SavedAccountTreeColumn("name", "Name", 210, anchor="w"),
-                SavedAccountTreeColumn("email", "Email", 220, anchor="w"),
-                SavedAccountTreeColumn("ext", "Ext", 60),
-                SavedAccountTreeColumn("accountIds", "Account IDs", 100),
-                SavedAccountTreeColumn("limits", "Limits", 190),
-                SavedAccountTreeColumn("saved", "Saved", 112),
-                SavedAccountTreeColumn("expires", "Expires", 80),
-                SavedAccountTreeColumn("active", "Active", 60),
-                SavedAccountTreeColumn("status", "Status", 60),
+                SavedAccountTreeColumn("name", "Name", ACCOUNT_TREE_NAME_WIDTH, anchor="w"),
+                SavedAccountTreeColumn("email", "Email", ACCOUNT_TREE_EMAIL_WIDTH, anchor="w"),
+                SavedAccountTreeColumn("ext", "Ext", ACCOUNT_TREE_EXTENSION_WIDTH),
+                SavedAccountTreeColumn("accountIds", "Account IDs", ACCOUNT_TREE_ACCOUNT_ID_WIDTH),
+                SavedAccountTreeColumn("limits", "Limits", ACCOUNT_TREE_LIMITS_WIDTH),
+                SavedAccountTreeColumn("saved", "Saved", ACCOUNT_TREE_SAVED_WIDTH),
+                SavedAccountTreeColumn("expires", "Expires", ACCOUNT_TREE_EXPIRES_WIDTH),
+                SavedAccountTreeColumn("active", "Active", ACCOUNT_TREE_ACTIVE_WIDTH),
+                SavedAccountTreeColumn("status", "Status", ACCOUNT_TREE_STATUS_WIDTH),
             )
         )
 
@@ -1346,14 +1356,14 @@ class CodexTab(SavedAccountsTreeTab):
 
         self._build_saved_account_tree(
             (
-                SavedAccountTreeColumn("name", "Name", 190, anchor="w"),
-                SavedAccountTreeColumn("email", "Email", 220, anchor="w"),
-                SavedAccountTreeColumn("accountId", "Account ID", 180),
-                SavedAccountTreeColumn("limits", "Limits", 190),
-                SavedAccountTreeColumn("saved", "Saved", 120),
-                SavedAccountTreeColumn("expires", "Expires", 100),
-                SavedAccountTreeColumn("active", "Active", 90),
-                SavedAccountTreeColumn("status", "Status", 90),
+                SavedAccountTreeColumn("name", "Name", ACCOUNT_TREE_NAME_WIDTH, anchor="w"),
+                SavedAccountTreeColumn("email", "Email", ACCOUNT_TREE_EMAIL_WIDTH, anchor="w"),
+                SavedAccountTreeColumn("accountId", "Account ID", ACCOUNT_TREE_ACCOUNT_ID_WIDTH),
+                SavedAccountTreeColumn("limits", "Limits", ACCOUNT_TREE_LIMITS_WIDTH),
+                SavedAccountTreeColumn("saved", "Saved", ACCOUNT_TREE_SAVED_WIDTH),
+                SavedAccountTreeColumn("expires", "Expires", ACCOUNT_TREE_EXPIRES_WIDTH),
+                SavedAccountTreeColumn("active", "Active", ACCOUNT_TREE_ACTIVE_WIDTH),
+                SavedAccountTreeColumn("status", "Status", ACCOUNT_TREE_STATUS_WIDTH),
             )
         )
 
@@ -1506,14 +1516,14 @@ class OmpOpenAITab(SavedAccountsTreeTab):
 
         self._build_saved_account_tree(
             (
-                SavedAccountTreeColumn("name", "Name", 180, anchor="w"),
-                SavedAccountTreeColumn("accountIds", "Account IDs", 180),
-                SavedAccountTreeColumn("limits", "Limits", 260),
-                SavedAccountTreeColumn("saved", "Saved", 120),
-                SavedAccountTreeColumn("expires", "Expires", 100),
-                SavedAccountTreeColumn("next", "Next", 100),
-                SavedAccountTreeColumn("active", "Active", 90),
-                SavedAccountTreeColumn("status", "Status", 90),
+                SavedAccountTreeColumn("name", "Name", ACCOUNT_TREE_NAME_WIDTH, anchor="w"),
+                SavedAccountTreeColumn("accountIds", "Account IDs", ACCOUNT_TREE_ACCOUNT_ID_WIDTH),
+                SavedAccountTreeColumn("limits", "Limits", ACCOUNT_TREE_LIMITS_WIDTH),
+                SavedAccountTreeColumn("saved", "Saved", ACCOUNT_TREE_SAVED_WIDTH),
+                SavedAccountTreeColumn("expires", "Expires", ACCOUNT_TREE_EXPIRES_WIDTH),
+                SavedAccountTreeColumn("next", "Next", ACCOUNT_TREE_NEXT_WIDTH),
+                SavedAccountTreeColumn("active", "Active", ACCOUNT_TREE_ACTIVE_WIDTH),
+                SavedAccountTreeColumn("status", "Status", ACCOUNT_TREE_STATUS_WIDTH),
             )
         )
 
