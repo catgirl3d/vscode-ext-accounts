@@ -30,6 +30,11 @@ TERMINAL_REFRESH_ERROR_CODES = {
     "access_denied",
     "invalid_client",
     "invalid_grant",
+    "refresh_token_expired",
+    "refresh_token_invalidated",
+    "refresh_token_reused",
+    "token_invalidated",
+    "token_revoked",
     "unauthorized_client",
 }
 TERMINAL_REFRESH_ERROR_HINTS = (
@@ -41,7 +46,9 @@ TERMINAL_REFRESH_ERROR_HINTS = (
     "refresh token is invalid",
     "revoked",
     "session has expired",
+    "session has ended",
     "sign in again",
+    "token has been invalidated",
 )
 
 

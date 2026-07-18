@@ -144,8 +144,8 @@ def saved_account_usage_snapshot_key(entry: Mapping[str, Any], *, entry_index: i
     return keys[0] if keys else None
 
 
-def _saved_account_usage_fetch_targets(entries: Sequence[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
-    fetch_targets: dict[str, tuple[str, str]] = {}
+def _saved_account_usage_fetch_targets(entries: Sequence[Mapping[str, Any]]) -> dict[str, list[tuple[str, str]]]:
+    fetch_targets: dict[str, list[tuple[str, str]]] = {}
     for entry_index, entry in enumerate(entries):
         if not isinstance(entry, Mapping):
             continue
@@ -159,9 +159,29 @@ def _saved_account_usage_fetch_targets(entries: Sequence[Mapping[str, Any]]) -> 
             continue
 
         snapshot_key = saved_account_usage_snapshot_key(entry, entry_index=entry_index)
-        if snapshot_key and snapshot_key not in fetch_targets:
-            fetch_targets[snapshot_key] = (access_token, bundle.account_id)
+        request_credential = (access_token, bundle.account_id)
+        if snapshot_key and request_credential not in fetch_targets.setdefault(snapshot_key, []):
+            fetch_targets[snapshot_key].append(request_credential)
     return fetch_targets
+
+
+def _is_terminal_usage_token_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 401:
+        return True
+
+    error_message = str(exc)
+    for error_code in (
+        getattr(exc, "error_code", None),
+        getattr(exc, "error_type", None),
+    ):
+        if oauth_refresh.is_terminal_token_exchange_failure(
+            status_code=status_code,
+            error_code=error_code,
+            error_message=error_message,
+        ):
+            return True
+    return False
 
 
 def _fetch_saved_account_usage_from_payload(
@@ -189,18 +209,32 @@ def _fetch_saved_account_usage_from_payload(
 
     updated_snapshots = 0
     error_messages: list[str] = []
-    for snapshot_key, (access_token, account_id) in fetch_targets.items():
-        try:
-            snapshot = fetch_usage_snapshot(access_token, account_id=account_id or None)
-        except Exception as exc:
-            error_messages.append(str(exc))
-            continue
+    fetch_errors: list[Exception] = []
+    for snapshot_key, request_credentials in fetch_targets.items():
+        for access_token, account_id in request_credentials:
+            try:
+                snapshot = fetch_usage_snapshot(access_token, account_id=account_id or None)
+            except Exception as exc:
+                fetch_errors.append(exc)
+                error_messages.append(str(exc))
+                continue
 
-        usage_snapshots[snapshot_key] = snapshot
-        updated_snapshots += 1
+            usage_snapshots[snapshot_key] = snapshot
+            updated_snapshots += 1
+            break
 
     if updated_snapshots <= 0:
         details = error_messages[0] if error_messages else "Usage endpoints returned no data."
+        if fetch_errors and all(_is_terminal_usage_token_error(error) for error in fetch_errors):
+            # A profile is terminal only when every saved credential hit a known auth failure.
+            updated_data = dict(account_data)
+            updated_data["refresh_status"] = saved_account_status.REFRESH_STATUS_TERMINAL_ERROR
+            updated_data["refresh_error"] = details
+            updated_data["refresh_error_at"] = oauth_refresh.current_time_iso()
+            disabled_group_keys = oauth_refresh.auto_refresh_disabled_group_keys(updated_data)
+            disabled_group_keys.update(oauth_refresh.group_keys_from_entries(entries))
+            oauth_refresh.set_auto_refresh_disabled_group_keys(updated_data, disabled_group_keys)
+            write_saved_account_data(path, updated_data)
         raise user_facing_error_cls(f"Usage fetch failed for '{name}': {details}")
 
     updated_data = dict(account_data)

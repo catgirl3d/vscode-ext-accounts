@@ -5,8 +5,11 @@ try:
 except ImportError:
     import tests.test_utils.bootstrap  # type: ignore
 
+import base64
 import json
+from io import BytesIO
 import unittest
+from urllib import error
 
 from vscode_inject import usage_limits
 
@@ -145,6 +148,68 @@ class UsageLimitsTests(unittest.TestCase):
         self.assertTrue(
             any(dict((key.lower(), value) for key, value in headers.items()).get("chatgpt-account-id") == "acct-1" for headers in seen_headers)
         )
+
+    def test_fetch_openai_usage_snapshot_keeps_http_401_status(self):
+        def fake_urlopen(_req, timeout=0):
+            raise error.HTTPError(
+                usage_limits.OPENAI_USAGE_ENDPOINT,
+                401,
+                "Unauthorized",
+                {},
+                BytesIO(
+                    b'{"error":{"code":"token_invalidated","type":"invalid_request_error",'
+                    b'"message":"Your authentication token has been invalidated."}}'
+                ),
+            )
+
+        with self.assertRaises(usage_limits.UsageFetchError) as context:
+            usage_limits.fetch_openai_usage_snapshot("access-token", urlopen=fake_urlopen)
+
+        self.assertEqual(context.exception.status_code, 401)
+        self.assertEqual(context.exception.error_code, "token_invalidated")
+        self.assertEqual(context.exception.error_type, "invalid_request_error")
+        self.assertEqual(
+            str(context.exception),
+            "HTTP 401: Your authentication token has been invalidated.",
+        )
+
+    def test_fetch_openai_usage_snapshot_keeps_terminal_auth_error_codes(self):
+        for error_code in (
+            "token_revoked",
+            "refresh_token_expired",
+            "refresh_token_reused",
+            "refresh_token_invalidated",
+        ):
+            def fake_urlopen(_req, timeout=0, error_code=error_code):
+                raise error.HTTPError(
+                    usage_limits.OPENAI_USAGE_ENDPOINT,
+                    400,
+                    "Bad Request",
+                    {},
+                    BytesIO(f'{{"error":{{"code":"{error_code}"}}}}'.encode("utf-8")),
+                )
+
+            with self.subTest(error_code=error_code), self.assertRaises(usage_limits.UsageFetchError) as context:
+                usage_limits.fetch_openai_usage_snapshot("access-token", urlopen=fake_urlopen)
+
+            self.assertEqual(context.exception.error_code, error_code)
+
+    def test_fetch_openai_usage_snapshot_reads_revocation_metadata_from_header(self):
+        encoded_error = base64.b64encode(b'{"error":{"type":"token_revoked"}}').decode("ascii")
+
+        def fake_urlopen(_req, timeout=0):
+            raise error.HTTPError(
+                usage_limits.OPENAI_USAGE_ENDPOINT,
+                401,
+                "Unauthorized",
+                {"x-error-json": encoded_error},
+                BytesIO(b'{"message":"unauthorized"}'),
+            )
+
+        with self.assertRaises(usage_limits.UsageFetchError) as context:
+            usage_limits.fetch_openai_usage_snapshot("access-token", urlopen=fake_urlopen)
+
+        self.assertEqual(context.exception.error_type, "token_revoked")
 
 
 if __name__ == "__main__":

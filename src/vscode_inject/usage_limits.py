@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import datetime
 import json
 from typing import Any, Callable, Mapping
@@ -16,7 +17,18 @@ OPENAI_USAGE_HEADERS = {
 
 
 class UsageFetchError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        error_code: str | None = None,
+        error_type: str | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+        self.error_type = error_type
 
 
 def _numeric_value(value: Any) -> float | None:
@@ -165,6 +177,47 @@ def _http_error_details(body: str) -> str:
     return body.strip() or "unknown HTTP error"
 
 
+def _error_payload_field(payload: Any, field: str) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+
+    error_payload = payload.get("error")
+    if isinstance(error_payload, Mapping):
+        value = error_payload.get(field)
+        if isinstance(value, str) and value:
+            return value
+
+    value = payload.get(field)
+    return value if isinstance(value, str) and value else None
+
+
+def _json_payload(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except Exception:
+        return None
+
+
+def _http_error_metadata(body: str, headers: Any = None) -> tuple[str | None, str | None]:
+    payloads: list[Any] = []
+    encoded_header = headers.get("x-error-json") if hasattr(headers, "get") else None
+    if isinstance(encoded_header, str) and encoded_header:
+        try:
+            decoded_header = base64.b64decode(encoded_header).decode("utf-8")
+        except Exception:
+            decoded_header = ""
+        if decoded_header:
+            payloads.append(_json_payload(decoded_header))
+    payloads.append(_json_payload(body))
+
+    for payload in payloads:
+        error_code = _error_payload_field(payload, "code")
+        error_type = _error_payload_field(payload, "type")
+        if error_code or error_type:
+            return error_code, error_type
+    return None, None
+
+
 def fetch_http_json_payload(
     endpoint: str,
     *,
@@ -191,7 +244,13 @@ def fetch_http_json_payload(
             body = response.read().decode("utf-8")
     except error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise UsageFetchError(f"HTTP {exc.code}: {_http_error_details(body)}") from exc
+        error_code, error_type = _http_error_metadata(body, exc.headers)
+        raise UsageFetchError(
+            f"HTTP {exc.code}: {_http_error_details(body)}",
+            status_code=exc.code,
+            error_code=error_code,
+            error_type=error_type,
+        ) from exc
     except error.URLError as exc:
         raise UsageFetchError(f"Network error: {exc.reason}") from exc
 

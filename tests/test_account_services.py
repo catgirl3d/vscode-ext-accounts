@@ -15,6 +15,7 @@ from unittest.mock import patch, Mock
 
 from vscode_inject import account_services
 from vscode_inject import oauth_refresh
+from vscode_inject import usage_limits
 
 
 class UserFacingError(RuntimeError):
@@ -1181,6 +1182,56 @@ class AccountServicesModuleTests(TempDirTestCase):
             },
         )
 
+    def test_fetch_saved_account_usage_falls_back_to_next_credential_for_same_snapshot(self):
+        writes: list[tuple[str, dict]] = []
+        fetch_calls: list[tuple[str, str | None]] = []
+
+        def fetch_usage_snapshot(access_token, account_id=None):
+            fetch_calls.append((access_token, account_id))
+            if access_token == "expired-access":
+                raise usage_limits.UsageFetchError("HTTP 401: unauthorized", status_code=401)
+            return {"fetched_at": "2026-07-11T10:00:00Z", "limits": [{"remaining": 42}]}
+
+        result = account_services.fetch_saved_account_usage(
+            "alice",
+            expected_kind="ide",
+            operation_lock=contextlib.nullcontext(),
+            load_saved_account_data=lambda name, expected_kind=None: (
+                "alice.json",
+                {
+                    "name": "alice",
+                    "entries": [
+                        {
+                            "key": oauth_refresh.KILO_NEW_KEY,
+                            "value": {
+                                "access_token": "expired-access",
+                                "refresh_token": "refresh-a",
+                                "accountId": "acct-1",
+                            },
+                        },
+                        {
+                            "key": oauth_refresh.CODEX_KEY,
+                            "value": {
+                                "access_token": "valid-access",
+                                "refresh_token": "refresh-b",
+                                "accountId": "acct-1",
+                            },
+                        },
+                    ],
+                },
+                "ide",
+            ),
+            write_saved_account_data=lambda path, data: writes.append((path, data)),
+            fetch_usage_snapshot=fetch_usage_snapshot,
+            user_facing_error_cls=UserFacingError,
+        )
+
+        self.assertEqual(fetch_calls, [("expired-access", "acct-1"), ("valid-access", "acct-1")])
+        self.assertEqual((result.requested_snapshots, result.updated_snapshots, result.failed_snapshots), (1, 1, 0))
+        self.assertEqual(result.error_messages, ("HTTP 401: unauthorized",))
+        self.assertNotEqual(writes[0][1].get("refresh_status"), oauth_refresh.REFRESH_STATUS_TERMINAL_ERROR)
+        self.assertIn("identity:account:acct-1", writes[0][1]["usage_snapshots"])
+
     def test_fetch_saved_account_usage_fetches_same_email_accounts_separately(self):
         written_records: list[tuple[str, dict]] = []
         fetch_calls: list[tuple[str, str | None]] = []
@@ -1406,6 +1457,254 @@ class AccountServicesModuleTests(TempDirTestCase):
             )
 
         self.assertEqual(writes, [])
+
+    def test_fetch_saved_account_usage_marks_profile_invalid_when_all_tokens_are_rejected(self):
+        writes: list[tuple[str, dict]] = []
+        account_data = {
+            "name": "alice",
+            "entries": [
+                {
+                    "key": "codex://openai",
+                    "value": {
+                        "access_token": "access-1",
+                        "refresh_token": "refresh-1",
+                        "accountId": "acct-1",
+                    },
+                }
+            ],
+        }
+
+        def fetch_usage_snapshot(access_token, account_id=None):
+            raise usage_limits.UsageFetchError(
+                "HTTP 401: Your authentication token has been invalidated.",
+                status_code=401,
+            )
+
+        with self.assertRaisesRegex(UserFacingError, "Usage fetch failed for 'alice': HTTP 401"):
+            account_services.fetch_saved_account_usage(
+                "alice",
+                expected_kind="codex",
+                operation_lock=contextlib.nullcontext(),
+                load_saved_account_data=lambda name, expected_kind=None: ("alice.json", account_data, "codex"),
+                write_saved_account_data=lambda path, data: writes.append((path, data)),
+                fetch_usage_snapshot=fetch_usage_snapshot,
+                user_facing_error_cls=UserFacingError,
+            )
+
+        self.assertEqual(len(writes), 1)
+        path, persisted = writes[0]
+        self.assertEqual(path, "alice.json")
+        self.assertEqual(persisted["entries"], account_data["entries"])
+        self.assertEqual(persisted["refresh_status"], oauth_refresh.REFRESH_STATUS_TERMINAL_ERROR)
+        self.assertEqual(
+            persisted["refresh_error"],
+            "HTTP 401: Your authentication token has been invalidated.",
+        )
+        self.assertIsInstance(persisted["refresh_error_at"], str)
+
+    def test_fetch_saved_account_usage_marks_profile_terminal_after_all_unique_credentials_return_401(self):
+        writes: list[tuple[str, dict]] = []
+        fetch_calls: list[tuple[str, str | None]] = []
+        account_data = {
+            "name": "alice",
+            "entries": [
+                {
+                    "key": oauth_refresh.KILO_NEW_KEY,
+                    "value": {
+                        "access_token": "access-a",
+                        "refresh_token": "refresh-a",
+                        "accountId": "acct-1",
+                    },
+                },
+                {
+                    "key": oauth_refresh.CODEX_KEY,
+                    "value": {
+                        "access_token": "access-b",
+                        "refresh_token": "refresh-b",
+                        "accountId": "acct-1",
+                    },
+                },
+            ],
+        }
+
+        def fetch_usage_snapshot(access_token, account_id=None):
+            fetch_calls.append((access_token, account_id))
+            raise usage_limits.UsageFetchError("HTTP 401: unauthorized", status_code=401)
+
+        with self.assertRaises(UserFacingError):
+            account_services.fetch_saved_account_usage(
+                "alice",
+                expected_kind="codex",
+                operation_lock=contextlib.nullcontext(),
+                load_saved_account_data=lambda name, expected_kind=None: ("alice.json", account_data, "codex"),
+                write_saved_account_data=lambda path, data: writes.append((path, data)),
+                fetch_usage_snapshot=fetch_usage_snapshot,
+                user_facing_error_cls=UserFacingError,
+            )
+
+        self.assertEqual(fetch_calls, [("access-a", "acct-1"), ("access-b", "acct-1")])
+        self.assertEqual(writes[0][1]["refresh_status"], oauth_refresh.REFRESH_STATUS_TERMINAL_ERROR)
+
+    def test_terminal_usage_disables_all_current_refresh_groups_without_dropping_existing_groups(self):
+        writes: list[tuple[str, dict]] = []
+        account_data = {
+            "name": "alice",
+            "auto_refresh_disabled_groups": [
+                {"provider": oauth_refresh.OPENAI_CODEX_PROVIDER, "refresh_token": "existing-refresh"}
+            ],
+            "entries": [
+                {
+                    "key": oauth_refresh.KILO_NEW_KEY,
+                    "value": {
+                        "access_token": "access-a",
+                        "refresh_token": "refresh-a",
+                        "accountId": "acct-a",
+                    },
+                },
+                {
+                    "key": oauth_refresh.CODEX_KEY,
+                    "value": {
+                        "access_token": "access-b",
+                        "refresh_token": "refresh-b",
+                        "accountId": "acct-b",
+                    },
+                },
+            ],
+        }
+
+        with self.assertRaises(UserFacingError):
+            account_services.fetch_saved_account_usage(
+                "alice",
+                expected_kind="codex",
+                operation_lock=contextlib.nullcontext(),
+                load_saved_account_data=lambda name, expected_kind=None: ("alice.json", account_data, "codex"),
+                write_saved_account_data=lambda path, data: writes.append((path, data)),
+                fetch_usage_snapshot=lambda access_token, account_id=None: (_ for _ in ()).throw(
+                    usage_limits.UsageFetchError("HTTP 401: unauthorized", status_code=401)
+                ),
+                user_facing_error_cls=UserFacingError,
+            )
+
+        persisted = writes[0][1]
+        self.assertEqual(
+            oauth_refresh.auto_refresh_disabled_group_keys(persisted),
+            {
+                oauth_refresh.RefreshGroupKey(oauth_refresh.OPENAI_CODEX_PROVIDER, "existing-refresh"),
+                oauth_refresh.RefreshGroupKey(oauth_refresh.OPENAI_CODEX_PROVIDER, "refresh-a"),
+                oauth_refresh.RefreshGroupKey(oauth_refresh.OPENAI_CODEX_PROVIDER, "refresh-b"),
+            },
+        )
+        remaining_groups = oauth_refresh.collect_refresh_groups(
+            [oauth_refresh.SavedAccountRecord(name="alice", path="alice.json", data=persisted)],
+            skip_disabled_auto_refresh_groups=True,
+        )
+        self.assertEqual(remaining_groups, [])
+
+    def test_fetch_saved_account_usage_marks_profile_invalid_for_revoked_token_code(self):
+        writes: list[tuple[str, dict]] = []
+        account_data = {
+            "name": "alice",
+            "entries": [
+                {
+                    "key": "codex://openai",
+                    "value": {
+                        "access_token": "access-1",
+                        "refresh_token": "refresh-1",
+                        "accountId": "acct-1",
+                    },
+                }
+            ],
+        }
+
+        def fetch_usage_snapshot(access_token, account_id=None):
+            raise usage_limits.UsageFetchError(
+                "HTTP 401: revoked",
+                status_code=401,
+                error_code="token_revoked",
+            )
+
+        with self.assertRaises(UserFacingError):
+            account_services.fetch_saved_account_usage(
+                "alice",
+                expected_kind="codex",
+                operation_lock=contextlib.nullcontext(),
+                load_saved_account_data=lambda name, expected_kind=None: ("alice.json", account_data, "codex"),
+                write_saved_account_data=lambda path, data: writes.append((path, data)),
+                fetch_usage_snapshot=fetch_usage_snapshot,
+                user_facing_error_cls=UserFacingError,
+            )
+
+        self.assertEqual(writes[0][1]["refresh_status"], oauth_refresh.REFRESH_STATUS_TERMINAL_ERROR)
+
+    def test_fetch_saved_account_usage_marks_profile_invalid_for_revoked_token_type(self):
+        writes: list[tuple[str, dict]] = []
+        account_data = {
+            "name": "alice",
+            "entries": [
+                {
+                    "key": "codex://openai",
+                    "value": {
+                        "access_token": "access-1",
+                        "refresh_token": "refresh-1",
+                        "accountId": "acct-1",
+                    },
+                }
+            ],
+        }
+
+        def fetch_usage_snapshot(access_token, account_id=None):
+            raise usage_limits.UsageFetchError(
+                "HTTP 401: unauthorized",
+                status_code=401,
+                error_code="invalid_request_error",
+                error_type="token_revoked",
+            )
+
+        with self.assertRaises(UserFacingError):
+            account_services.fetch_saved_account_usage(
+                "alice",
+                expected_kind="codex",
+                operation_lock=contextlib.nullcontext(),
+                load_saved_account_data=lambda name, expected_kind=None: ("alice.json", account_data, "codex"),
+                write_saved_account_data=lambda path, data: writes.append((path, data)),
+                fetch_usage_snapshot=fetch_usage_snapshot,
+                user_facing_error_cls=UserFacingError,
+            )
+
+        self.assertEqual(writes[0][1]["refresh_status"], oauth_refresh.REFRESH_STATUS_TERMINAL_ERROR)
+
+    def test_fetch_saved_account_usage_marks_profile_for_any_401(self):
+        writes: list[tuple[str, dict]] = []
+        account_data = {
+            "name": "alice",
+            "entries": [
+                {
+                    "key": "codex://openai",
+                    "value": {
+                        "access_token": "access-1",
+                        "refresh_token": "refresh-1",
+                        "accountId": "acct-1",
+                    },
+                }
+            ],
+        }
+
+        def fetch_usage_snapshot(access_token, account_id=None):
+            raise usage_limits.UsageFetchError("HTTP 401: unauthorized", status_code=401)
+
+        with self.assertRaises(UserFacingError):
+            account_services.fetch_saved_account_usage(
+                "alice",
+                expected_kind="codex",
+                operation_lock=contextlib.nullcontext(),
+                load_saved_account_data=lambda name, expected_kind=None: ("alice.json", account_data, "codex"),
+                write_saved_account_data=lambda path, data: writes.append((path, data)),
+                fetch_usage_snapshot=fetch_usage_snapshot,
+                user_facing_error_cls=UserFacingError,
+            )
+
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][1]["refresh_status"], oauth_refresh.REFRESH_STATUS_TERMINAL_ERROR)
 
     def test_fetch_saved_accounts_usage_aggregates_partial_failures(self):
         writes: list[tuple[str, dict]] = []
