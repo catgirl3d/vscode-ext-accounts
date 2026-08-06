@@ -928,7 +928,7 @@ def append_omp_openai_account_from_json_string(json_str: str, target_name: str):
     print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
 
 
-def export_ide_account_data(name: str, format_kind: str = "full_tokens") -> str:
+def export_ide_account_data(name: str, format_kind: str = account_services.EXPORT_FORMAT_FULL_TOKENS) -> str:
     exported = account_services.export_ide_account_data(
         name,
         format_kind=format_kind,

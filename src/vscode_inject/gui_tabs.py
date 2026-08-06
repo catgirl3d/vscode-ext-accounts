@@ -661,20 +661,13 @@ class JsonAccountExportDialog:
 
         tk.Label(format_frame, text="Format:", bg=services.bg, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 8))
 
-        self.format_var = tk.StringVar(value="full_tokens")
-        formats = [
-            ("Full tokens", "full_tokens"),
-            ("Session JSON (Sub2API)", "session_json"),
-            ("accessToken only", "access_token"),
-            ("personal_access_token", "personal_access_token"),
-            ("refresh_token only", "refresh_token"),
-        ]
+        self.format_var = tk.StringVar(value=account_services.EXPORT_FORMAT_FULL_TOKENS)
 
-        for label, val in formats:
+        for fmt in account_services.EXPORT_FORMATS:
             rb = tk.Radiobutton(
                 format_frame,
-                text=label,
-                value=val,
+                text=fmt.label,
+                value=fmt.key,
                 variable=self.format_var,
                 command=self.update_export,
                 bg=services.bg,
@@ -884,6 +877,7 @@ class SavedAccountsTreeTab:
     expected_kind: str | None = None
     selection_empty_message: str | None = None
     rename_dialog_title: str | None = None
+    supports_export: bool = False
 
     def _require_saved_account_config_value(self, attr_name: str) -> str:
         value = getattr(self, attr_name, None)
@@ -909,7 +903,8 @@ class SavedAccountsTreeTab:
         self.tree.tag_configure(TERMINAL_REFRESH_ERROR_ROW_TAG, foreground=TERMINAL_REFRESH_ERROR_ROW_FG)
         self.context_menu = tk.Menu(self.tree, tearoff=False)
         self.context_menu.add_command(label="Use selected", command=self.on_use)
-        self.context_menu.add_command(label="Export", command=self.on_export)
+        if self.supports_export:
+            self.context_menu.add_command(label="Export", command=self.on_export)
         self.context_menu.add_command(label="Rename", command=self.on_rename)
         self.tree.bind("<F2>", self.on_rename_key)
         self.tree.bind("<Button-3>", self.on_tree_context_menu)
@@ -1057,6 +1052,7 @@ class IdeAccountsTab(SavedAccountsTreeTab):
     expected_kind = "ide"
     selection_empty_message = "Select an IDE account first."
     rename_dialog_title = "Rename IDE account"
+    supports_export = True
 
     def __init__(self, notebook: ttk.Notebook, services: GuiServices):
         self.services = services

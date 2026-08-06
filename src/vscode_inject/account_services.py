@@ -497,6 +497,14 @@ def _normalize_omp_import_items(data: Any, *, user_facing_error_cls) -> list[dic
         if not data:
             raise user_facing_error_cls("ERROR: Empty JSON array provided")
         items = data
+    elif isinstance(data, dict) and isinstance(data.get("entries"), list):
+        items = [
+            entry.get("value")
+            for entry in data["entries"]
+            if isinstance(entry, dict) and isinstance(entry.get("value"), dict)
+        ]
+        if not items:
+            raise user_facing_error_cls("ERROR: No valid account entries found in JSON")
     else:
         items = [data]
 
@@ -1127,7 +1135,35 @@ def import_ide_account_data(
     )
 
 
-def export_account_value(value: Mapping[str, Any], format_kind: str = "full_tokens") -> dict[str, Any]:
+EXPORT_FORMAT_FULL_TOKENS = "full_tokens"
+EXPORT_FORMAT_SESSION_JSON = "session_json"
+EXPORT_FORMAT_ACCESS_TOKEN = "access_token"
+EXPORT_FORMAT_PERSONAL_ACCESS_TOKEN = "personal_access_token"
+EXPORT_FORMAT_REFRESH_TOKEN = "refresh_token"
+
+
+@dataclass(frozen=True)
+class ExportFormatSpec:
+    key: str
+    label: str
+
+
+EXPORT_FORMATS: tuple[ExportFormatSpec, ...] = (
+    ExportFormatSpec(EXPORT_FORMAT_FULL_TOKENS, "Full tokens"),
+    ExportFormatSpec(EXPORT_FORMAT_SESSION_JSON, "Session JSON (Sub2API)"),
+    ExportFormatSpec(EXPORT_FORMAT_ACCESS_TOKEN, "accessToken only"),
+    ExportFormatSpec(EXPORT_FORMAT_PERSONAL_ACCESS_TOKEN, "personal_access_token"),
+    ExportFormatSpec(EXPORT_FORMAT_REFRESH_TOKEN, "refresh_token only"),
+)
+
+EXPORT_FORMAT_KEYS = tuple(fmt.key for fmt in EXPORT_FORMATS)
+
+
+def export_account_value(value: Mapping[str, Any], format_kind: str = EXPORT_FORMAT_FULL_TOKENS) -> dict[str, Any]:
+    if format_kind not in EXPORT_FORMAT_KEYS:
+        valid_formats = ", ".join(EXPORT_FORMAT_KEYS)
+        raise ValueError(f"Unknown export format '{format_kind}'. Expected one of: {valid_formats}")
+
     raw_tokens = value.get("tokens")
     tokens = raw_tokens if isinstance(raw_tokens, Mapping) else {}
 
@@ -1190,7 +1226,7 @@ def export_account_value(value: Mapping[str, Any], format_kind: str = "full_toke
     )
     email_str = email.strip() if isinstance(email, str) and email.strip() else None
 
-    if format_kind == "session_json":
+    if format_kind == EXPORT_FORMAT_SESSION_JSON:
         res: dict[str, Any] = {
             "accessToken": access_token_str,
             "authProvider": "openai",
@@ -1203,14 +1239,14 @@ def export_account_value(value: Mapping[str, Any], format_kind: str = "full_toke
             res["idToken"] = id_token_str
         return res
 
-    if format_kind == "access_token":
+    if format_kind == EXPORT_FORMAT_ACCESS_TOKEN:
         return {"accessToken": access_token_str}
 
-    if format_kind == "personal_access_token":
+    if format_kind == EXPORT_FORMAT_PERSONAL_ACCESS_TOKEN:
         pat = access_token_str if access_token_str.startswith("at-") else (f"at-{access_token_str}" if access_token_str else "")
         return {"personal_access_token": pat}
 
-    if format_kind == "refresh_token":
+    if format_kind == EXPORT_FORMAT_REFRESH_TOKEN:
         return {"refresh_token": refresh_token_str}
 
     toks: dict[str, Any] = {
@@ -1230,7 +1266,7 @@ def export_account_value(value: Mapping[str, Any], format_kind: str = "full_toke
 
 def export_ide_account_data(
     name: str,
-    format_kind: str = "full_tokens",
+    format_kind: str = EXPORT_FORMAT_FULL_TOKENS,
     *,
     load_saved_account_data,
     user_facing_error_cls,

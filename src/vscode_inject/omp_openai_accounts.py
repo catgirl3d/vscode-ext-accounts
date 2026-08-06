@@ -42,16 +42,49 @@ def from_omp_auth_format(value: Mapping[str, Any], *, identity_key: str | None =
 
 
 def from_omp_import_format(value: Mapping[str, Any]) -> dict[str, Any]:
-    access_token = value.get("access_token") or value.get("access")
+    raw_tokens = value.get("tokens")
+    tokens: Mapping[str, Any] = raw_tokens if isinstance(raw_tokens, Mapping) else {}
+
+    raw_inner = value.get("value")
+    inner: Mapping[str, Any] = raw_inner if isinstance(raw_inner, Mapping) else {}
+
+    access_token = (
+        tokens.get("access_token")
+        or tokens.get("access")
+        or tokens.get("accessToken")
+        or value.get("access_token")
+        or value.get("access")
+        or value.get("accessToken")
+        or inner.get("access_token")
+        or inner.get("access")
+        or inner.get("accessToken")
+    )
     access_token_str = access_token if isinstance(access_token, str) else ""
 
-    refresh_token = value.get("refresh_token") or value.get("refresh")
+    refresh_token = (
+        tokens.get("refresh_token")
+        or tokens.get("refresh")
+        or tokens.get("refreshToken")
+        or value.get("refresh_token")
+        or value.get("refresh")
+        or value.get("refreshToken")
+        or inner.get("refresh_token")
+        or inner.get("refresh")
+        or inner.get("refreshToken")
+    )
     refresh_token_str = refresh_token if isinstance(refresh_token, str) else ""
 
-    account_id = value.get("account_id") or value.get("accountId")
+    account_id = (
+        tokens.get("account_id")
+        or tokens.get("accountId")
+        or value.get("account_id")
+        or value.get("accountId")
+        or inner.get("account_id")
+        or inner.get("accountId")
+    )
     account_id_str = account_id if isinstance(account_id, str) else ""
 
-    expires = value.get("expires")
+    expires = value.get("expires") or tokens.get("expires") or inner.get("expires")
     expires_ms = expires if type(expires) is int else 0
     if not expires_ms:
         expires_ms = decode_jwt_exp_ms(access_token_str)
@@ -64,15 +97,30 @@ def from_omp_import_format(value: Mapping[str, Any]) -> dict[str, Any]:
         "accountId": account_id_str,
     }
 
-    email = _normalized_email(value.get("email"))
+    email = (
+        _normalized_email(value.get("email"))
+        or _normalized_email(tokens.get("email"))
+        or _normalized_email(inner.get("email"))
+    )
     if email:
         normalized["email"] = email
 
-    id_token = value.get("id_token")
+    id_token = (
+        tokens.get("id_token")
+        or tokens.get("idToken")
+        or value.get("id_token")
+        or value.get("idToken")
+        or inner.get("id_token")
+        or inner.get("idToken")
+    )
     if isinstance(id_token, str) and id_token:
         normalized["id_token"] = id_token
 
-    explicit_identity_key = value.get("identity_key")
+    explicit_identity_key = (
+        value.get("identity_key")
+        or tokens.get("identity_key")
+        or inner.get("identity_key")
+    )
     if isinstance(explicit_identity_key, str) and explicit_identity_key:
         normalized["identity_key"] = explicit_identity_key
     else:

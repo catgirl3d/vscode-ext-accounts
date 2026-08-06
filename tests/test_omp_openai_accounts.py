@@ -279,6 +279,24 @@ class OmpOpenAIAccountsTests(unittest.TestCase):
         )
         self.assertEqual(from_bool_expiry["expires"], 1_767_225_600_000)
 
+    def test_from_omp_import_format_supports_nested_tokens_object(self):
+        token = jwt_with_exp(1_767_225_600)
+        copied_format = {
+            "tokens": {
+                "access_token": token,
+                "refresh_token": "nested-refresh",
+                "id_token": "nested-id",
+                "account_id": "a92f60a1-c2c2-4b7c-b3e9-4ca6ba6a0541",
+            },
+            "email": "gpt.plus.coke@wtmelon.store",
+        }
+        normalized = omp_openai_accounts.from_omp_import_format(copied_format)
+        self.assertEqual(normalized["access_token"], token)
+        self.assertEqual(normalized["refresh_token"], "nested-refresh")
+        self.assertEqual(normalized["accountId"], "a92f60a1-c2c2-4b7c-b3e9-4ca6ba6a0541")
+        self.assertEqual(normalized["id_token"], "nested-id")
+        self.assertEqual(normalized["email"], "gpt.plus.coke@wtmelon.store")
+
 
 if __name__ == "__main__":
     unittest.main()

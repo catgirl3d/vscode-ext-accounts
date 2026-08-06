@@ -241,6 +241,38 @@ class AccountServicesModuleTests(TempDirTestCase):
         )
         self.assertEqual(object_result.entries[0]["value"]["accountId"], "acct-2")
 
+    def test_import_omp_openai_account_data_supports_entries_wrapper(self):
+        saved_account_json = {
+            "name": "exported-account",
+            "kind": "ide",
+            "entries": [
+                {
+                    "key": "omp://openai",
+                    "value": {
+                        "access_token": "access-entries",
+                        "refresh_token": "refresh-entries",
+                        "account_id": "acct-entries",
+                        "expires": 400,
+                    },
+                }
+            ],
+        }
+        result = account_services.import_omp_openai_account_data(
+            saved_account_json,
+            "omp-entries",
+            omp_key="omp://openai",
+            from_omp_import_format=lambda value: {
+                "type": "openai-codex",
+                "access_token": value["access_token"],
+                "refresh_token": value["refresh_token"],
+                "accountId": value["account_id"],
+                "expires": value["expires"],
+            },
+            write_account_file=lambda *args: "omp-entries.json",
+            user_facing_error_cls=UserFacingError,
+        )
+        self.assertEqual(result.entries[0]["value"]["accountId"], "acct-entries")
+
     def test_import_omp_openai_account_data_validates_payload_and_required_fields(self):
         with self.assertRaisesRegex(UserFacingError, "Empty JSON array"):
             account_services.import_omp_openai_account_data(

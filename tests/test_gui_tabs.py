@@ -1286,8 +1286,7 @@ class CodexTabTests(unittest.TestCase):
             },
         )
         self.assertEqual(tab.context_menu.entrycget(0, "label"), "Use selected")
-        self.assertEqual(tab.context_menu.entrycget(1, "label"), "Export")
-        self.assertEqual(tab.context_menu.entrycget(2, "label"), "Rename")
+        self.assertEqual(tab.context_menu.entrycget(1, "label"), "Rename")
         self.assertEqual(button_texts(tab.btn_frame)[:3], ["▶ Use selected", "💾 Save current", "📥 Import Codex auth"])
         self.assertIn("📊 Fetch", button_texts(tab.btn_frame))
         self.assertIn("📊 Fetch all", button_texts(tab.btn_frame))
