@@ -130,6 +130,7 @@ The **IDE Accounts** tab provides:
 - **Use selected** — apply a saved IDE account to the checked targets
 - **Save current** — save the selected IDE/Kilo New account state
 - **Import account** — open a dialog and import an IDE account from pasted JSON
+- **Export** — export the selected saved IDE account to JSON in a choice of formats
 - **Fetch** — fetch usage limits for the selected saved IDE account
 - **Fetch all** — fetch usage limits for all saved IDE accounts
 - **Renew tokens** — refresh the saved IDE snapshot in `accounts/*.json`
@@ -139,6 +140,8 @@ The **IDE Accounts** tab provides:
 - **Full backup** — create a real ZIP snapshot of the app storages (`state.vscdb`, `Local State`, Kilo New auth, OMP `agent.db`, Codex auth)
 
 `Import account` expects a JSON object or a one-item array. Required fields: `access_token`, `refresh_token`, `id_token`. Optional fields: `account_id`, `expires`.
+
+`Export` opens a dialog to export the selected IDE account into one of 5 supported formats: `Full tokens` (Agent Identity / auth.json format), `Session JSON (Sub2API)`, `accessToken only`, `personal_access_token`, or `refresh_token only`. Output can be copied to clipboard or saved to a `.json` file.
 
 The **Active** column shows where each account is currently applied: `VS` (VSCode), `AG` (Antigravity), `KN` (Kilo New).
 The **Expires** column shows `expired` in red when a saved profile already contains an expired token.

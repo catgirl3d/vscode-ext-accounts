@@ -130,6 +130,7 @@ python main.py
 - **Use selected** — застосувати збережений IDE-акаунт до відмічених цілей
 - **Save current** — зберегти поточний стан акаунтів для вибраних IDE/Kilo New слотів
 - **Import account** — відкрити діалог і імпортувати IDE-акаунт із вставленого JSON
+- **Export** — експортувати виділений збережений IDE-акаунт у JSON в обраному форматі
 - **Fetch** — отримати ліміти використання для вибраного збереженого IDE-акаунта
 - **Fetch all** — отримати ліміти використання для всіх збережених IDE-акаунтів
 - **Renew tokens** — оновити збережений IDE-snapshot у `accounts/*.json`
@@ -139,6 +140,8 @@ python main.py
 - **Full backup** — створити справжній ZIP-знімок сховищ застосунку (`state.vscdb`, `Local State`, Kilo New auth, OMP `agent.db`, Codex auth)
 
 `Import account` очікує JSON-об'єкт або масив з одним елементом. Обов'язкові поля: `access_token`, `refresh_token`, `id_token`. Необов'язкові поля: `account_id`, `expires`.
+
+`Export` відкриває діалог для експорту виділеного IDE-акаунта в один із 5 підтримуваних форматів: `Full tokens` (формат Agent Identity / auth.json), `Session JSON (Sub2API)`, `accessToken only`, `personal_access_token` або `refresh_token only`. Результат можна скопіювати в буфер обміну або зберегти у `.json` файл.
 
 Колонка **Active** показує де акаунт зараз активний: `VS` (VSCode), `AG` (Antigravity), `KN` (Kilo New).
 Колонка **Expires** показує `expired` червоним кольором, якщо збережений snapshot уже прострочений.
