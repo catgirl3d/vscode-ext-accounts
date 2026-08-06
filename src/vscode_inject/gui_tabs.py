@@ -454,6 +454,11 @@ def clipboard_text_or_empty(root: tk.Tk) -> str:
     return value if isinstance(value, str) else str(value)
 
 
+def center_window_on_parent(window: tk.Toplevel, parent: tk.Misc) -> None:
+    # Tk places the dialog on the parent's monitor and respects its work area.
+    window.tk.call("tk::PlaceWindow", window._w, "widget", parent._w)
+
+
 class JsonAccountImportDialog:
     def __init__(
         self,
@@ -585,6 +590,7 @@ class JsonAccountImportDialog:
             self.name_entry.focus_set()
         else:
             self.payload_text.focus_set()
+        center_window_on_parent(self.window, services.root)
 
     def show(self) -> tuple[str, str] | None:
         self.window.grab_set()
@@ -740,6 +746,7 @@ class JsonAccountExportDialog:
         ).pack(side="right")
 
         self.update_export()
+        center_window_on_parent(self.window, services.root)
 
     def update_export(self):
         format_kind = self.format_var.get()

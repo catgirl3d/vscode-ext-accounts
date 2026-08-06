@@ -37,6 +37,11 @@ class GuiTabsHelperTests(unittest.TestCase):
             fake_datetime.fromtimestamp.side_effect = RuntimeError("bad timestamp")
             self.assertEqual(gui_tabs.format_expires_ms(86_400_000), "")
 
+        dialog_window = SimpleNamespace(_w=".dialog", tk=Mock())
+        parent_window = SimpleNamespace(_w=".")
+        gui_tabs.center_window_on_parent(dialog_window, parent_window)
+        dialog_window.tk.call.assert_called_once_with("tk::PlaceWindow", ".dialog", "widget", ".")
+
         self.assertFalse(gui_tabs.is_expired_ms("bad"))
         self.assertFalse(gui_tabs.is_expired_ms(2_000, now_ms=1_000))
         self.assertTrue(gui_tabs.is_expired_ms(1_000, now_ms=2_000))
@@ -831,8 +836,10 @@ class IdeAccountsTabTests(unittest.TestCase):
 
     def test_ide_account_import_dialog_starts_empty_and_returns_submit_result(self):
         services = self.make_services(self.make_db(running=False))
-        dialog = gui_tabs.IdeAccountImportDialog(services)
+        with patch("vscode_inject.gui_tabs.center_window_on_parent") as center_window:
+            dialog = gui_tabs.IdeAccountImportDialog(services)
         self.addCleanup(lambda: dialog.window.winfo_exists() and dialog.window.destroy())
+        center_window.assert_called_once_with(dialog.window, services.root)
 
         self.assertIn("access_token", dialog.example_text.get("1.0", "end-1c"))
         self.assertEqual(dialog.payload_text.get("1.0", "end-1c"), "")
