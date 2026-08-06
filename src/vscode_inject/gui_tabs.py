@@ -631,8 +631,162 @@ class IdeAccountImportDialog(JsonAccountImportDialog):
         )
 
 
+class JsonAccountExportDialog:
+    def __init__(
+        self,
+        services: GuiServices,
+        *,
+        title: str,
+        account_name: str,
+        export_fn: Callable[[str, str], str],
+    ):
+        self.services = services
+        self.title = title
+        self.account_name = account_name
+        self.export_fn = export_fn
+        self.window = tk.Toplevel(services.root)
+        self.window.title(f"{title} - {account_name}")
+        self.window.transient(services.root)
+        self.window.configure(bg=services.bg)
+        self.window.resizable(True, True)
+        self.window.minsize(700, 520)
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+        self.window.bind("<Escape>", self.close)
+
+        content = tk.Frame(self.window, bg=services.bg, padx=12, pady=12)
+        content.pack(fill="both", expand=True)
+
+        format_frame = tk.Frame(content, bg=services.bg)
+        format_frame.pack(fill="x", pady=(0, 8))
+
+        tk.Label(format_frame, text="Format:", bg=services.bg, fg="#6c7086", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 8))
+
+        self.format_var = tk.StringVar(value="full_tokens")
+        formats = [
+            ("Full tokens", "full_tokens"),
+            ("Session JSON (Sub2API)", "session_json"),
+            ("accessToken only", "access_token"),
+            ("personal_access_token", "personal_access_token"),
+            ("refresh_token only", "refresh_token"),
+        ]
+
+        for label, val in formats:
+            rb = tk.Radiobutton(
+                format_frame,
+                text=label,
+                value=val,
+                variable=self.format_var,
+                command=self.update_export,
+                bg=services.bg,
+                fg=services.fg,
+                activebackground=services.bg,
+                activeforeground=services.fg,
+                selectcolor=services.btn_bg,
+                font=("Segoe UI", 9),
+            )
+            rb.pack(side="left", padx=4)
+
+        self.payload_text = scrolledtext.ScrolledText(
+            content,
+            height=16,
+            bg=services.btn_bg,
+            fg=services.fg,
+            insertbackground=services.fg,
+            relief="flat",
+            wrap="word",
+            font=("Consolas", 10),
+        )
+        self.payload_text.pack(fill="both", expand=True, pady=(4, 10))
+
+        button_row = tk.Frame(content, bg=services.bg)
+        button_row.pack(fill="x")
+
+        tk.Button(
+            button_row,
+            text="Copy to Clipboard",
+            command=self.copy_to_clipboard,
+            bg="#89b4fa",
+            fg=services.sel_fg,
+            activebackground=services.btn_act,
+            activeforeground=services.fg,
+            relief="flat",
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 10),
+            cursor="hand2",
+        ).pack(side="right", padx=(8, 0))
+
+        tk.Button(
+            button_row,
+            text="Save to File...",
+            command=self.save_to_file,
+            bg=services.btn_bg,
+            fg=services.fg,
+            activebackground=services.btn_act,
+            activeforeground=services.fg,
+            relief="flat",
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 10),
+            cursor="hand2",
+        ).pack(side="right", padx=(8, 0))
+
+        tk.Button(
+            button_row,
+            text="Close",
+            command=self.close,
+            bg=services.btn_bg,
+            fg=services.fg,
+            activebackground=services.btn_act,
+            activeforeground=services.fg,
+            relief="flat",
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 10),
+            cursor="hand2",
+        ).pack(side="right")
+
+        self.update_export()
+
+    def update_export(self):
+        format_kind = self.format_var.get()
+        try:
+            exported_json = self.export_fn(self.account_name, format_kind)
+        except Exception as exc:
+            exported_json = f"Error exporting account: {exc}"
+        self.payload_text.delete("1.0", "end")
+        self.payload_text.insert("1.0", exported_json)
+
+    def copy_to_clipboard(self):
+        text = self.payload_text.get("1.0", "end-1c").strip()
+        if text:
+            self.services.root.clipboard_clear()
+            self.services.root.clipboard_append(text)
+            messagebox.showinfo(self.title, "Copied export JSON to clipboard!")
+
+    def save_to_file(self):
+        text = self.payload_text.get("1.0", "end-1c").strip()
+        if not text:
+            return
+        filename = filedialog.asksaveasfilename(
+            parent=self.window,
+            title="Save Exported Account JSON",
+            initialfile=f"{self.account_name}.json",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if filename:
+            with open(filename, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            messagebox.showinfo(self.title, f"Saved account to {filename}")
+
+    def close(self, _event=None):
+        self.window.destroy()
+
+
 def ask_ide_account_import(services: GuiServices) -> tuple[str, str] | None:
     return IdeAccountImportDialog(services).show()
+
 
 
 def ask_omp_openai_import(services: GuiServices) -> tuple[str, str] | None:
@@ -755,6 +909,7 @@ class SavedAccountsTreeTab:
         self.tree.tag_configure(TERMINAL_REFRESH_ERROR_ROW_TAG, foreground=TERMINAL_REFRESH_ERROR_ROW_FG)
         self.context_menu = tk.Menu(self.tree, tearoff=False)
         self.context_menu.add_command(label="Use selected", command=self.on_use)
+        self.context_menu.add_command(label="Export", command=self.on_export)
         self.context_menu.add_command(label="Rename", command=self.on_rename)
         self.tree.bind("<F2>", self.on_rename_key)
         self.tree.bind("<Button-3>", self.on_tree_context_menu)
@@ -886,6 +1041,12 @@ class SavedAccountsTreeTab:
             expected_kind,
         )
         self.services.run_guarded(fetch_all_limits)
+
+    def on_export(self):
+        name = self.selected_saved_account_name()
+        if not name:
+            return
+        messagebox.showwarning("Export", "Export is not supported for this tab.")
 
     def on_refresh(self):
         self.services.refresh_all()
@@ -1043,6 +1204,7 @@ class IdeAccountsTab(SavedAccountsTreeTab):
                 SavedAccountActionButton("▶ Use selected", "on_use", accent=True),
                 SavedAccountActionButton("💾 Save current", "on_save"),
                 SavedAccountActionButton("📥 Import", "on_import_clipboard"),
+                SavedAccountActionButton("📤 Export", "on_export"),
                 SavedAccountActionButton("📊 Fetch", "on_fetch_usage_selected"),
                 SavedAccountActionButton("📊 Fetch all", "on_fetch_usage_all"),
                 SavedAccountActionButton("↻ Renew tokens", "on_refresh_selected", separator_before=True),
@@ -1052,6 +1214,17 @@ class IdeAccountsTab(SavedAccountsTreeTab):
                 SavedAccountActionButton("RUN", "on_run", attr_name="run_button", hide_after_create=True),
                 SavedAccountActionButton("📦 Full backup", "on_backup", attr_name="backup_button"),
             )
+        )
+
+    def on_export(self):
+        name = self.selected_saved_account_name()
+        if not name:
+            return
+        JsonAccountExportDialog(
+            self.services,
+            title="Export IDE Account",
+            account_name=name,
+            export_fn=self.services.db.export_ide_account_data,
         )
 
     def update_run_button_visibility(self, running: bool):

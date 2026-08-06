@@ -345,8 +345,9 @@ class IdeAccountsTabTests(unittest.TestCase):
 
         self.assertIs(tab.run_button.master, tab.btn_frame)
         self.assertEqual(tab.context_menu.entrycget(0, "label"), "Use selected")
-        self.assertEqual(tab.context_menu.entrycget(1, "label"), "Rename")
-        self.assertEqual(button_texts(tab.btn_frame)[:3], ["▶ Use selected", "💾 Save current", "📥 Import"])
+        self.assertEqual(tab.context_menu.entrycget(1, "label"), "Export")
+        self.assertEqual(tab.context_menu.entrycget(2, "label"), "Rename")
+        self.assertEqual(button_texts(tab.btn_frame)[:4], ["▶ Use selected", "💾 Save current", "📥 Import", "📤 Export"])
         self.assertEqual(tab.tree.heading("limits", "text"), "Limits")
         self.assertIn("📊 Fetch", button_texts(tab.btn_frame))
         self.assertIn("📊 Fetch all", button_texts(tab.btn_frame))
@@ -1285,7 +1286,8 @@ class CodexTabTests(unittest.TestCase):
             },
         )
         self.assertEqual(tab.context_menu.entrycget(0, "label"), "Use selected")
-        self.assertEqual(tab.context_menu.entrycget(1, "label"), "Rename")
+        self.assertEqual(tab.context_menu.entrycget(1, "label"), "Export")
+        self.assertEqual(tab.context_menu.entrycget(2, "label"), "Rename")
         self.assertEqual(button_texts(tab.btn_frame)[:3], ["▶ Use selected", "💾 Save current", "📥 Import Codex auth"])
         self.assertIn("📊 Fetch", button_texts(tab.btn_frame))
         self.assertIn("📊 Fetch all", button_texts(tab.btn_frame))

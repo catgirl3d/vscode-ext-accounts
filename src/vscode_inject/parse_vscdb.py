@@ -928,6 +928,17 @@ def append_omp_openai_account_from_json_string(json_str: str, target_name: str):
     print(f"  expires:   {exp_dt.strftime('%Y-%m-%d %H:%M')}")
 
 
+def export_ide_account_data(name: str, format_kind: str = "full_tokens") -> str:
+    exported = account_services.export_ide_account_data(
+        name,
+        format_kind=format_kind,
+        load_saved_account_data=_load_saved_account_data,
+        user_facing_error_cls=UserFacingError,
+    )
+    return json.dumps(exported, indent=2, ensure_ascii=False)
+
+
+
 def main():
     raise SystemExit("CLI support removed. Use `python main.py`.")
 

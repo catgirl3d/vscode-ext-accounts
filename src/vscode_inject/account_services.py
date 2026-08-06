@@ -1125,3 +1125,129 @@ def import_ide_account_data(
         write_account_file=write_account_file,
         user_facing_error_cls=user_facing_error_cls,
     )
+
+
+def export_account_value(value: Mapping[str, Any], format_kind: str = "full_tokens") -> dict[str, Any]:
+    raw_tokens = value.get("tokens")
+    tokens = raw_tokens if isinstance(raw_tokens, Mapping) else {}
+
+    raw_user = value.get("user")
+    user = raw_user if isinstance(raw_user, Mapping) else {}
+
+    raw_account = value.get("account")
+    account = raw_account if isinstance(raw_account, Mapping) else {}
+
+    access_token = (
+        value.get("access_token")
+        or value.get("accessToken")
+        or value.get("access")
+        or value.get("personal_access_token")
+        or value.get("personalAccessToken")
+        or tokens.get("access_token")
+        or tokens.get("accessToken")
+        or tokens.get("access")
+        or ""
+    )
+    access_token_str = str(access_token) if access_token else ""
+
+    refresh_token = (
+        value.get("refresh_token")
+        or value.get("refreshToken")
+        or value.get("refresh")
+        or tokens.get("refresh_token")
+        or tokens.get("refreshToken")
+        or tokens.get("refresh")
+        or ""
+    )
+    refresh_token_str = str(refresh_token) if refresh_token else ""
+
+    id_token = (
+        value.get("id_token")
+        or value.get("idToken")
+        or tokens.get("id_token")
+        or tokens.get("idToken")
+    )
+    id_token_str = str(id_token) if id_token else None
+
+    account_id = (
+        value.get("accountId")
+        or value.get("account_id")
+        or account.get("id")
+        or account.get("account_id")
+        or account.get("accountId")
+        or tokens.get("account_id")
+        or tokens.get("accountId")
+        or ""
+    )
+    account_id_str = str(account_id) if account_id else ""
+
+    email = (
+        value.get("email")
+        or user.get("email")
+        or user.get("emailAddress")
+        or tokens.get("email")
+        or account_email(dict(value))
+    )
+    email_str = email.strip() if isinstance(email, str) and email.strip() else None
+
+    if format_kind == "session_json":
+        res: dict[str, Any] = {
+            "accessToken": access_token_str,
+            "authProvider": "openai",
+        }
+        if email_str:
+            res["user"] = {"email": email_str}
+        if account_id_str:
+            res["account"] = {"id": account_id_str}
+        if id_token_str:
+            res["idToken"] = id_token_str
+        return res
+
+    if format_kind == "access_token":
+        return {"accessToken": access_token_str}
+
+    if format_kind == "personal_access_token":
+        pat = access_token_str if access_token_str.startswith("at-") else (f"at-{access_token_str}" if access_token_str else "")
+        return {"personal_access_token": pat}
+
+    if format_kind == "refresh_token":
+        return {"refresh_token": refresh_token_str}
+
+    toks: dict[str, Any] = {
+        "access_token": access_token_str,
+        "refresh_token": refresh_token_str,
+    }
+    if id_token_str:
+        toks["id_token"] = id_token_str
+    if account_id_str:
+        toks["account_id"] = account_id_str
+
+    out: dict[str, Any] = {"tokens": toks}
+    if email_str:
+        out["email"] = email_str
+    return out
+
+
+def export_ide_account_data(
+    name: str,
+    format_kind: str = "full_tokens",
+    *,
+    load_saved_account_data,
+    user_facing_error_cls,
+) -> dict[str, Any]:
+    _path, account_data, _kind = load_saved_account_data(name, expected_kind="ide")
+    entries = account_data.get("entries", []) if isinstance(account_data, Mapping) else []
+    if not isinstance(entries, list) or not entries:
+        raise user_facing_error_cls(f"Account '{name}' does not contain any entries.")
+
+    first_val = None
+    for entry in entries:
+        if isinstance(entry, Mapping) and isinstance(entry.get("value"), Mapping):
+            first_val = entry["value"]
+            break
+
+    if not first_val:
+        raise user_facing_error_cls(f"Account '{name}' has no valid account payload.")
+
+    return export_account_value(first_val, format_kind=format_kind)
+

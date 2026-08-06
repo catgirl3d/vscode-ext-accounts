@@ -1822,6 +1822,65 @@ class RefactorAccountServicesTests(unittest.TestCase):
             {"extensionId": 'roo"\\cline', "key": 'oauth"\\key'},
         )
 
+    def test_export_account_value_and_export_ide_account_data(self):
+        val = {
+            "access_token": "acc-123",
+            "refresh_token": "ref-456",
+            "id_token": "id-789",
+            "accountId": "acct-99",
+            "email": "test@example.com",
+        }
+
+        full_toks = account_services.export_account_value(val, "full_tokens")
+        self.assertEqual(
+            full_toks,
+            {
+                "tokens": {
+                    "access_token": "acc-123",
+                    "refresh_token": "ref-456",
+                    "id_token": "id-789",
+                    "account_id": "acct-99",
+                },
+                "email": "test@example.com",
+            },
+        )
+
+        sess_json = account_services.export_account_value(val, "session_json")
+        self.assertEqual(
+            sess_json,
+            {
+                "accessToken": "acc-123",
+                "authProvider": "openai",
+                "user": {"email": "test@example.com"},
+                "account": {"id": "acct-99"},
+                "idToken": "id-789",
+            },
+        )
+
+        acc_tok = account_services.export_account_value(val, "access_token")
+        self.assertEqual(acc_tok, {"accessToken": "acc-123"})
+
+        pat_tok = account_services.export_account_value(val, "personal_access_token")
+        self.assertEqual(pat_tok, {"personal_access_token": "at-acc-123"})
+
+        ref_tok = account_services.export_account_value(val, "refresh_token")
+        self.assertEqual(ref_tok, {"refresh_token": "ref-456"})
+
+        # Test export_ide_account_data
+        load_fn = lambda name, expected_kind=None: (
+            "path.json",
+            {"entries": [{"key": "kilo-new", "value": val}]},
+            "ide",
+        )
+        res = account_services.export_ide_account_data(
+            "alice",
+            "full_tokens",
+            load_saved_account_data=load_fn,
+            user_facing_error_cls=account_services.UserFacingError if hasattr(account_services, "UserFacingError") else ValueError,
+        )
+        self.assertEqual(res, full_toks)
+
 
 if __name__ == "__main__":
     unittest.main()
+
