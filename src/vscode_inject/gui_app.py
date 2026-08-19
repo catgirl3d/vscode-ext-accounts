@@ -165,6 +165,38 @@ def main():
     style.map("Treeview.Heading", background=[("active", HEADER_BG), ("pressed", HEADER_BG)], foreground=[("active", FG), ("pressed", FG)])
     style.map("Treeview", background=[("selected", SEL_BG)], foreground=[("selected", SEL_FG)])
     style.configure(
+        "Search.TCombobox",
+        background=BTN_BG,
+        fieldbackground=BTN_BG,
+        foreground=FG,
+        bordercolor=BTN_ACT,
+        lightcolor=BTN_ACT,
+        darkcolor=BTN_ACT,
+        arrowcolor=FG,
+        selectbackground=BTN_BG,
+        selectforeground=FG,
+        font=("Segoe UI", 9),
+        padding=(6, 3),
+        relief="flat",
+    )
+    style.map(
+        "Search.TCombobox",
+        background=[("readonly", BTN_BG), ("focus", BTN_BG), ("active", BTN_BG)],
+        fieldbackground=[("readonly", BTN_BG), ("focus", BTN_BG), ("active", BTN_BG)],
+        foreground=[("readonly", FG), ("focus", FG), ("active", FG)],
+        selectbackground=[("readonly", BTN_BG), ("focus", BTN_BG), ("active", BTN_BG)],
+        selectforeground=[("readonly", FG), ("focus", FG), ("active", FG)],
+        bordercolor=[("focus", SEL_BG), ("readonly", BTN_ACT)],
+        lightcolor=[("focus", SEL_BG), ("readonly", BTN_ACT)],
+        darkcolor=[("focus", SEL_BG), ("readonly", BTN_ACT)],
+        arrowcolor=[("readonly", FG), ("focus", FG), ("active", FG)],
+    )
+    root.option_add("*TCombobox*Listbox.background", BTN_BG)
+    root.option_add("*TCombobox*Listbox.foreground", FG)
+    root.option_add("*TCombobox*Listbox.selectBackground", BTN_ACT)
+    root.option_add("*TCombobox*Listbox.selectForeground", FG)
+    root.option_add("*TCombobox*Listbox.font", ("Segoe UI", 9))
+    style.configure(
         "TNotebook",
         background=BG,
         borderwidth=1,

@@ -117,6 +117,8 @@ class SavedAccountTreeRow:
     iid: str
     values: tuple[Any, ...]
     tags: tuple[str, ...]
+    search_email: str = ""
+    search_account_id: str = ""
 
 
 def format_saved_at(data):
@@ -182,7 +184,7 @@ def shorten_account_id(account_id, limit=12):
     return account_id or "?"
 
 
-def summarize_account_ids(entries, skip_keys=None):
+def account_id_values(entries, skip_keys=None):
     skip_keys = set(skip_keys or [])
     account_ids = []
     for entry in entries:
@@ -190,8 +192,13 @@ def summarize_account_ids(entries, skip_keys=None):
             continue
         value = entry.get("value", {})
         if isinstance(value, dict) and value.get("accountId"):
-            account_ids.append(shorten_account_id(value["accountId"], limit=8))
-    return ", ".join(account_ids) if account_ids else "?"
+            account_ids.append(value["accountId"])
+    return account_ids
+
+
+def summarize_account_ids(entries, skip_keys=None):
+    account_ids = account_id_values(entries, skip_keys=skip_keys)
+    return ", ".join(shorten_account_id(account_id, limit=8) for account_id in account_ids) if account_ids else "?"
 
 
 def summarize_current_account_infos(accounts):
@@ -886,6 +893,12 @@ class SavedAccountsTreeTab:
     rename_dialog_title: str | None = None
     supports_export: bool = False
 
+    def _initialize_saved_account_view_state(self):
+        self._saved_account_rows: list[SavedAccountTreeRow] = []
+        self._tree_columns: tuple[SavedAccountTreeColumn, ...] = ()
+        self._sort_column: str | None = None
+        self._sort_reverse = False
+
     def _require_saved_account_config_value(self, attr_name: str) -> str:
         value = getattr(self, attr_name, None)
         if isinstance(value, str) and value:
@@ -917,13 +930,112 @@ class SavedAccountsTreeTab:
         self.tree.bind("<Button-3>", self.on_tree_context_menu)
 
     def _build_saved_account_tree(self, columns: Sequence[SavedAccountTreeColumn], *, height: int = 8):
+        self._initialize_saved_account_view_state()
         column_names = tuple(column.name for column in columns)
+        self._tree_columns = tuple(columns)
+
+        search_frame = tk.Frame(self.frame, bg=self.services.bg)
+        search_frame.pack(fill="x", padx=10, pady=(0, 6))
+        tk.Label(
+            search_frame,
+            text="Search by:",
+            bg=self.services.bg,
+            fg="#6c7086",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(0, 8))
+        self.search_by_var = tk.StringVar(value="Email")
+        self.search_by_combo = ttk.Combobox(
+            search_frame,
+            textvariable=self.search_by_var,
+            values=("Email", "Account ID"),
+            state="readonly",
+            style="Search.TCombobox",
+            width=12,
+        )
+        self.search_by_combo.pack(side="left", padx=(0, 8))
+        self.email_search_var = tk.StringVar()
+        self.email_search_entry = tk.Entry(
+            search_frame,
+            textvariable=self.email_search_var,
+            bg=self.services.btn_bg,
+            fg=self.services.fg,
+            insertbackground=self.services.fg,
+            relief="flat",
+            font=("Segoe UI", 10),
+        )
+        self.email_search_entry.pack(side="left", fill="x", expand=True)
+        self.email_search_var.trace_add("write", self._on_email_search_change)
+        self.search_by_var.trace_add("write", self._on_email_search_change)
+
         self.tree = ttk.Treeview(self.frame, columns=column_names, show="headings", height=height, selectmode="browse")
         for column in columns:
-            self.tree.heading(column.name, text=column.heading, anchor="center")
+            self.tree.heading(
+                column.name,
+                text=column.heading,
+                anchor="center",
+                command=partial(self.on_tree_heading_click, column.name),
+            )
             self.tree.column(column.name, width=column.width, anchor=column.anchor)
         self._configure_saved_account_tree()
         self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+
+    def _on_email_search_change(self, *_args):
+        self._render_saved_account_tree()
+
+    def _row_matches_search(self, row: SavedAccountTreeRow, search_text: str) -> bool:
+        search_value = row.search_account_id if self.search_by_var.get() == "Account ID" else row.search_email
+        return search_text in search_value.casefold()
+
+    def _sorted_saved_account_rows(self, rows: Sequence[SavedAccountTreeRow]) -> list[SavedAccountTreeRow]:
+        if self._sort_column is None:
+            return list(rows)
+
+        column_index = next(
+            (index for index, column in enumerate(self._tree_columns) if column.name == self._sort_column),
+            None,
+        )
+        if column_index is None:
+            return list(rows)
+
+        non_empty_rows = [row for row in rows if str(row.values[column_index]).strip()]
+        empty_rows = [row for row in rows if not str(row.values[column_index]).strip()]
+        non_empty_rows.sort(
+            key=lambda row: str(row.values[column_index]).casefold(),
+            reverse=self._sort_reverse,
+        )
+        return non_empty_rows + empty_rows
+
+    def _render_saved_account_tree(self, selected_iid: str | None = None):
+        if selected_iid is None:
+            selection = self.tree.selection()
+            selected_iid = selection[0] if selection else None
+
+        search_text = self.email_search_var.get().strip().casefold()
+        rows = [row for row in self._saved_account_rows if self._row_matches_search(row, search_text)]
+        rows = self._sorted_saved_account_rows(rows)
+
+        self.tree.delete(*self.tree.get_children())
+        for row in rows:
+            self.tree.insert("", "end", iid=row.iid, values=row.values, tags=row.tags)
+
+        if selected_iid and self.tree.exists(selected_iid):
+            self.tree.selection_set(selected_iid)
+            self.tree.focus(selected_iid)
+            self.tree.see(selected_iid)
+
+    def on_tree_heading_click(self, column_name: str):
+        if self._sort_column == column_name:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_column = column_name
+            self._sort_reverse = False
+
+        for column in self._tree_columns:
+            heading = column.heading
+            if column.name == self._sort_column:
+                heading += " (desc)" if self._sort_reverse else " (asc)"
+            self.tree.heading(column.name, text=heading)
+        self._render_saved_account_tree()
 
     def _build_saved_account_actions(self, buttons: Sequence[SavedAccountActionButton]):
         self.btn_frame = tk.Frame(self.frame, bg=self.services.bg)
@@ -954,20 +1066,18 @@ class SavedAccountsTreeTab:
     ):
         previous_selection = self.tree.selection()
         previous_iid = previous_selection[0] if previous_selection else None
-        self.tree.delete(*self.tree.get_children())
         current_state = load_current_state()
         update_current_state(current_state)
+        rows: list[SavedAccountTreeRow] = []
         for record in self.services.db.list_saved_accounts(kind):
             row = build_row(record, current_state)
             if row is None:
                 continue
-            self.tree.insert("", "end", iid=row.iid, values=row.values, tags=row.tags)
+            rows.append(row)
+        self._saved_account_rows = rows
+        self._render_saved_account_tree(previous_iid)
         if after_present:
             after_present(current_state)
-        if previous_iid and self.tree.exists(previous_iid):
-            self.tree.selection_set(previous_iid)
-            self.tree.focus(previous_iid)
-            self.tree.see(previous_iid)
 
     def selected_saved_account_name(self):
         return selected_name(self.tree, self._require_saved_account_config_value("selection_empty_message"))
@@ -1374,6 +1484,8 @@ class IdeAccountsTab(SavedAccountsTreeTab):
             iid=name,
             values=(name, email, ext_tag, accounts_short, limits, saved_at, expires, active, refresh_status),
             tags=account_row_tags(data, expires_ms),
+            search_email=email if email != "-" else "",
+            search_account_id=", ".join(account_id_values(ide_entries)),
         )
 
     def _after_ide_refresh(self, _refresh_state):
@@ -1600,6 +1712,8 @@ class CodexTab(SavedAccountsTreeTab):
             iid=name,
             values=(name, email, account_id, limits, saved_at, expires, active, refresh_status),
             tags=account_row_tags(data, expires_ms),
+            search_email=email if email != "-" else "",
+            search_account_id=", ".join(account_id_values([codex_entry])),
         )
 
     def refresh(self):
@@ -1765,6 +1879,10 @@ class OmpOpenAITab(SavedAccountsTreeTab):
 
         now_ms = current_time_ms()
         saved_at = format_saved_at(data)
+        email = summarize_account_emails(
+            omp_entries,
+            self.services.db.account_email,
+        )
         account_ids = summarize_account_ids(omp_entries)
         limits = summarize_usage_limits(data, omp_entries)
         expires = format_omp_expires_status(omp_entries, now_ms=now_ms)
@@ -1776,6 +1894,8 @@ class OmpOpenAITab(SavedAccountsTreeTab):
             iid=name,
             values=(name, account_ids, limits, saved_at, expires, next_expiry, active, refresh_status),
             tags=omp_account_row_tags(data, omp_entries, now_ms=now_ms),
+            search_email=email if email != "-" else "",
+            search_account_id=", ".join(account_id_values(omp_entries)),
         )
 
     def refresh(self):

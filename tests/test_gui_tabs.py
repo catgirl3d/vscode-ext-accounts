@@ -354,6 +354,7 @@ class IdeAccountsTabTests(unittest.TestCase):
         self.assertEqual(tab.context_menu.entrycget(2, "label"), "Rename")
         self.assertEqual(button_texts(tab.btn_frame)[:4], ["▶ Use selected", "💾 Save current", "📥 Import", "📤 Export"])
         self.assertEqual(tab.tree.heading("limits", "text"), "Limits")
+        self.assertEqual(tab.search_by_combo.cget("style"), "Search.TCombobox")
         self.assertIn("📊 Fetch", button_texts(tab.btn_frame))
         self.assertIn("📊 Fetch all", button_texts(tab.btn_frame))
         self.assertIn("↻ Renew tokens", button_texts(tab.btn_frame))
@@ -378,6 +379,67 @@ class IdeAccountsTabTests(unittest.TestCase):
                 "status": gui_tabs.ACCOUNT_TREE_STATUS_WIDTH,
             },
         )
+
+    def test_ide_tree_headers_sort_rows_and_email_search_filters_case_insensitively(self):
+        db_module = self.make_db(running=False)
+        db_module.list_saved_accounts = lambda kind: [
+            {
+                "name": "charlie",
+                "data": {
+                    "entries": [
+                        {
+                            "key": db_module.IDE_EXTENSIONS["kilocode"],
+                            "value": {"email": "charlie@example.com", "accountId": "acct-charlie"},
+                        }
+                    ]
+                },
+            },
+            {
+                "name": "alice",
+                "data": {
+                    "entries": [
+                        {
+                            "key": db_module.IDE_EXTENSIONS["kilocode"],
+                            "value": {"email": "alice@example.com", "accountId": "acct-alice"},
+                        }
+                    ]
+                },
+            },
+            {
+                "name": "bob",
+                "data": {
+                    "entries": [
+                        {
+                            "key": db_module.IDE_EXTENSIONS["kilocode"],
+                            "value": {"email": "bob@example.com", "accountId": "acct-bob-full-123"},
+                        }
+                    ]
+                },
+            },
+        ]
+        tab = IdeAccountsTab(ttk.Notebook(self.root), self.make_services(db_module))
+
+        tab.refresh()
+        self.assertEqual(tab.tree.get_children(), ("charlie", "alice", "bob"))
+
+        tab.on_tree_heading_click("name")
+        self.assertEqual(tab.tree.get_children(), ("alice", "bob", "charlie"))
+        self.assertEqual(tab.tree.heading("name", "text"), "Name (asc)")
+
+        tab.on_tree_heading_click("name")
+        self.assertEqual(tab.tree.get_children(), ("charlie", "bob", "alice"))
+        self.assertEqual(tab.tree.heading("name", "text"), "Name (desc)")
+
+        tab.email_search_var.set("BOB@EXAMPLE")
+        self.assertEqual(tab.tree.get_children(), ("bob",))
+        self.assertEqual(tab.tree.item("bob", "values")[1], "bob@example.com")
+
+        tab.email_search_var.set("FULL-123")
+        tab.search_by_combo.set("Account ID")
+        self.assertEqual(tab.tree.get_children(), ("bob",))
+
+        tab.email_search_var.set("")
+        self.assertEqual(tab.tree.get_children(), ("charlie", "bob", "alice"))
 
     def test_run_button_is_hidden_while_selected_ide_is_running(self):
         notebook = ttk.Notebook(self.root)
@@ -1114,6 +1176,7 @@ class OmpOpenAITabTests(unittest.TestCase):
             OMP_AGENT_DB_PATH="C:/Users/Test/.omp/agent/agent.db",
             OMP_OPENAI_KEY="omp://openai",
             account_fingerprint=lambda value: value.get("refresh_token") if isinstance(value, dict) else None,
+            account_email=lambda value: value.get("email") if isinstance(value, dict) else None,
             read_current_omp_openai_accounts=lambda: list(current_accounts),
             list_saved_accounts=lambda kind: list(saved_records) if kind == "omp" else [],
             save_omp_openai_account=save_omp_openai_account,
@@ -1170,6 +1233,47 @@ class OmpOpenAITabTests(unittest.TestCase):
         self.assertEqual(row_values[6], "active")
         self.assertEqual(tab.tree.item("alice", "tags"), (PARTIAL_EXPIRED_ROW_TAG,))
         self.assertEqual(tab.current_value.cget("text"), "acct-exp..., acct-fut...")
+
+    def test_omp_email_search_uses_email_from_entries(self):
+        db_module = self.make_db()
+        db_module.list_saved_accounts = lambda kind: [
+            {
+                "name": "work",
+                "data": {
+                    "entries": [
+                        {
+                            "key": db_module.OMP_OPENAI_KEY,
+                            "value": {
+                                "email": "work@example.com",
+                                "accountId": "acct-work",
+                                "refresh_token": "refresh-work",
+                            },
+                        }
+                    ]
+                },
+            },
+            {
+                "name": "personal",
+                "data": {
+                    "entries": [
+                        {
+                            "key": db_module.OMP_OPENAI_KEY,
+                            "value": {
+                                "email": "personal@example.com",
+                                "accountId": "acct-personal",
+                                "refresh_token": "refresh-personal",
+                            },
+                        }
+                    ]
+                },
+            },
+        ]
+        tab = OmpOpenAITab(ttk.Notebook(self.root), self.make_services(db_module))
+
+        tab.refresh()
+        tab.email_search_var.set("PERSONAL@EXAMPLE")
+
+        self.assertEqual(tab.tree.get_children(), ("personal",))
 
     def test_omp_tab_actions_call_backend_contracts(self):
         notebook = ttk.Notebook(self.root)
