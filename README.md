@@ -138,6 +138,7 @@ The **IDE Accounts** tab provides:
 - **Delete** — remove a saved IDE account
 - **Reload** — reread current state and saved accounts without modifying tokens
 - **Full backup** — create a real ZIP snapshot of the app storages (`state.vscdb`, `Local State`, Kilo New auth, OMP `agent.db`, Codex auth)
+- **Search and sort** — search saved accounts by email or Account ID and sort them by clicking table headers
 
 `Import account` expects a JSON object or a one-item array. Required fields: `access_token`, `refresh_token`, `id_token`. Optional fields: `account_id`, `expires`.
 

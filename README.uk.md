@@ -138,6 +138,7 @@ python main.py
 - **Delete** — видалити збережений IDE-акаунт
 - **Reload** — перечитати поточний стан і список збережених акаунтів без зміни токенів
 - **Full backup** — створити справжній ZIP-знімок сховищ застосунку (`state.vscdb`, `Local State`, Kilo New auth, OMP `agent.db`, Codex auth)
+- **Search and sort** — шукати збережені акаунти за email або Account ID та сортувати їх натисканням на заголовки таблиці
 
 `Import account` очікує JSON-об'єкт або масив з одним елементом. Обов'язкові поля: `access_token`, `refresh_token`, `id_token`. Необов'язкові поля: `account_id`, `expires`.
 
