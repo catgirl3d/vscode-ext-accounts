@@ -384,6 +384,52 @@ class ParseVscdbTests(unittest.TestCase):
 
         account_email.assert_called_once_with({"email": "user@example.com"})
 
+    def test_save_and_use_kilo_opencode_go_key_account_delegates_to_account_services(self):
+        with patch.object(db.kilo_key_store, "read_current_entry", return_value={"key": db.KILO_OPENCODE_GO_KEY, "value": {"key": "oc_sk_1"}}) as read_current_entry:
+            self.assertEqual(
+                db.read_current_kilo_key_entry(),
+                {"key": db.KILO_OPENCODE_GO_KEY, "value": {"key": "oc_sk_1"}},
+            )
+        read_current_entry.assert_called_once_with(db.KILO_DB_PATH, db.KILO_OPENCODE_GO_KEY)
+
+        with patch.object(db.kilo_key_store, "replace_key") as replace_key:
+            db._replace_kilo_key("oc_sk_2")
+        replace_key.assert_called_once_with(db.KILO_DB_PATH, db.KILO_AUTH_PATH, "oc_sk_2")
+
+        with patch.object(db.account_services, "save_kilo_key_account") as save_kilo_key_account:
+            db.save_kilo_key_account("alice")
+        save_kilo_key_account.assert_called_once_with(
+            "alice",
+            entry_key=db.KILO_OPENCODE_GO_KEY,
+            read_kilo_key_entry=db.read_current_kilo_key_entry,
+            write_account_file=db._write_account_file,
+            user_facing_error_cls=db.UserFacingError,
+        )
+
+        with patch.object(db.account_services, "use_kilo_key_account") as use_kilo_key_account:
+            db.use_kilo_key_account("alice")
+        use_kilo_key_account.assert_called_once_with(
+            "alice",
+            load_saved_account_data=db._load_saved_account_data,
+            entry_key=db.KILO_OPENCODE_GO_KEY,
+            create_prewrite_backup=db.create_prewrite_backup,
+            replace_kilo_key=db._replace_kilo_key,
+            kilo_db_path=db.KILO_DB_PATH,
+            kilo_auth_path=db.KILO_AUTH_PATH,
+            user_facing_error_cls=db.UserFacingError,
+        )
+
+        with patch.object(db.account_services, "import_kilo_key_account_data") as import_kilo_key_account_data:
+            db.import_kilo_key_account_from_json_string('"oc_sk_3"', "imported")
+        import_kilo_key_account_data.assert_called_once_with(
+            "oc_sk_3",
+            "imported",
+            entry_key=db.KILO_OPENCODE_GO_KEY,
+            from_kilo_key_import_format=db.kilo_key_store.from_import_format,
+            write_account_file=db._write_account_file,
+            user_facing_error_cls=db.UserFacingError,
+        )
+
     def test_fetch_saved_account_usage_message_uses_compact_snapshot_summary(self):
         self.patch_db(
             "account_services",

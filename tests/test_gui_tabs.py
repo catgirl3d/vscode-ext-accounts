@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 from vscode_inject import gui_tabs
-from vscode_inject.gui_tabs import CodexTab, EXPIRED_ROW_TAG, GuiServices, IdeAccountsTab, OmpOpenAITab, PARTIAL_EXPIRED_ROW_TAG
+from vscode_inject.gui_tabs import CodexTab, EXPIRED_ROW_TAG, GuiServices, IdeAccountsTab, KiloOpenCodeGoTab, OmpOpenAITab, PARTIAL_EXPIRED_ROW_TAG
 from vscode_inject import parse_vscdb as db
 
 
@@ -27,6 +27,14 @@ def assert_tree_column_widths(test_case: unittest.TestCase, tree: ttk.Treeview, 
 
 
 class GuiTabsHelperTests(unittest.TestCase):
+    def test_mask_api_key_keeps_short_keys_hidden(self):
+        self.assertEqual(gui_tabs.mask_api_key(""), "-")
+        self.assertEqual(gui_tabs.mask_api_key("abc"), "***")
+        self.assertEqual(gui_tabs.mask_api_key("abcdefgh"), "********")
+        self.assertEqual(gui_tabs.mask_api_key("abcdefghijklm"), "ab...lm")
+        self.assertEqual(gui_tabs.mask_api_key("abcdefghijklmnop"), "ab...op")
+        self.assertEqual(gui_tabs.mask_api_key("abcdefghijklmnopq"), "abcdefgh...nopq")
+
     def test_formatting_and_selection_helpers_cover_edge_cases(self):
         self.assertIsInstance(gui_tabs.current_time_ms(), int)
         self.assertEqual(gui_tabs.format_saved_at({}), "?")
@@ -1341,6 +1349,158 @@ class OmpOpenAITabTests(unittest.TestCase):
         self.assertEqual(fetch_all_call.kwargs, {})
         fetch_all_call.args[0]()
         db_module.fetch_saved_accounts_usage.assert_called_once_with("omp")
+
+
+class KiloOpenCodeGoTabTests(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(str(exc))
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+
+    def make_db(self):
+        current_entry = {"key": "kilo://opencode-go", "value": {"key": "oc_sk_current_1234567890"}}
+        saved_records = [
+            {
+                "name": "alice",
+                "kind": "kilo-key",
+                "readable": True,
+                "data": {
+                    "saved_at": "2026-05-17T11:18:00",
+                    "entries": [{"key": "kilo://opencode-go", "value": {"key": "oc_sk_current_1234567890"}}],
+                },
+            },
+            {
+                "name": "bob",
+                "kind": "kilo-key",
+                "readable": True,
+                "data": {
+                    "saved_at": "2026-05-18T12:00:00",
+                    "entries": [{"key": "kilo://opencode-go", "value": {"key": "oc_sk_other_0987654321"}}],
+                },
+            },
+        ]
+        return SimpleNamespace(
+            KILO_DB_PATH="C:/Users/Test/.local/share/kilo/kilo.db",
+            KILO_AUTH_PATH="C:/Users/Test/.local/share/kilo/auth.json",
+            KILO_OPENCODE_GO_KEY="kilo://opencode-go",
+            read_current_kilo_key_entry=lambda: current_entry,
+            list_saved_accounts=lambda kind: list(saved_records) if kind == "kilo-key" else [],
+            save_kilo_key_account=Mock(name="save_kilo_key_account"),
+            import_kilo_key_account_from_json_string=Mock(name="import_kilo_key_account_from_json_string"),
+            use_kilo_key_account=Mock(name="use_kilo_key_account"),
+            rename_saved_account=Mock(name="rename_saved_account"),
+            delete_saved_account=Mock(name="delete_saved_account"),
+        )
+
+    def make_services(self, db_module):
+        return GuiServices(
+            root=self.root,
+            db=db_module,
+            bg="#1e1e2e",
+            fg="#cdd6f4",
+            btn_bg="#313244",
+            btn_act="#45475a",
+            sel_fg="#1e1e2e",
+            run_guarded=Mock(),
+            set_status=lambda *args, **kwargs: None,
+        )
+
+    def test_kilo_key_tab_renders_masked_keys_and_marks_matching_profile_active(self):
+        notebook = ttk.Notebook(self.root)
+        services = self.make_services(self.make_db())
+        tab = KiloOpenCodeGoTab(notebook, services)
+
+        assert_tree_column_widths(
+            self,
+            tab.tree,
+            {
+                "name": gui_tabs.ACCOUNT_TREE_NAME_WIDTH,
+                "key": gui_tabs.ACCOUNT_TREE_EMAIL_WIDTH,
+                "saved": gui_tabs.ACCOUNT_TREE_SAVED_WIDTH,
+                "active": gui_tabs.ACCOUNT_TREE_ACTIVE_WIDTH,
+            },
+        )
+        self.assertEqual(button_texts(tab.btn_frame), [
+            "▶ Use selected",
+            "💾 Save current",
+            "📥 Import key",
+            "✏ Rename",
+            "🗑 Delete",
+            "⟳ Reload",
+        ])
+
+        tab.refresh()
+
+        alice_values = tab.tree.item("alice", "values")
+        self.assertEqual(alice_values[0], "alice")
+        self.assertEqual(alice_values[1], "oc_sk_cu...7890")
+        self.assertEqual(alice_values[2], "2026-05-17 11:18")
+        self.assertEqual(alice_values[3], "active")
+        bob_values = tab.tree.item("bob", "values")
+        self.assertEqual(bob_values[1], "oc_sk_ot...4321")
+        self.assertEqual(bob_values[3], "-")
+        self.assertEqual(tab.current_value.cget("text"), "oc_sk_cu...7890")
+
+    def test_kilo_key_tab_searches_by_full_key(self):
+        db_module = self.make_db()
+        tab = KiloOpenCodeGoTab(ttk.Notebook(self.root), self.make_services(db_module))
+
+        tab.refresh()
+        tab.search_by_combo.set("Key")
+        tab.email_search_var.set("0987654321")
+
+        self.assertEqual(tab.tree.get_children(), ("bob",))
+
+    def test_kilo_key_tab_reports_current_key_read_errors(self):
+        db_module = self.make_db()
+        db_module.read_current_kilo_key_entry = Mock(side_effect=RuntimeError("database is locked"))
+        services = self.make_services(db_module)
+        services.set_status = Mock()
+        tab = KiloOpenCodeGoTab(ttk.Notebook(self.root), services)
+
+        tab.refresh()
+
+        services.set_status.assert_called_once()
+        self.assertIn("database is locked", services.set_status.call_args.args[0])
+        self.assertEqual(tab.current_value.cget("text"), "-")
+
+    def test_kilo_key_tab_actions_call_backend_contracts(self):
+        notebook = ttk.Notebook(self.root)
+        db_module = self.make_db()
+        services = self.make_services(db_module)
+        tab = KiloOpenCodeGoTab(notebook, services)
+
+        with patch("vscode_inject.gui_tabs.ask_account_name", return_value="saved-kilo"):
+            tab.on_save()
+        services.run_guarded.assert_called_once_with(
+            db_module.save_kilo_key_account,
+            "saved-kilo",
+            success_msg="Saved Kilo OpenCode Go key 'saved-kilo'",
+        )
+
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.ask_kilo_key_import", return_value=("imported-kilo", '"oc_sk_new"')):
+            tab.on_import_new()
+        services.run_guarded.assert_called_once_with(
+            db_module.import_kilo_key_account_from_json_string,
+            '"oc_sk_new"',
+            "imported-kilo",
+            success_msg="Imported Kilo OpenCode Go key 'imported-kilo'",
+        )
+
+        services.run_guarded.reset_mock()
+        with patch("vscode_inject.gui_tabs.selected_name", return_value="alice"), patch(
+            "vscode_inject.gui_tabs.messagebox.askyesno", return_value=True
+        ):
+            tab.on_use()
+        services.run_guarded.assert_called_once_with(
+            db_module.use_kilo_key_account,
+            "alice",
+            success_msg="Switched Kilo OpenCode Go to 'alice'",
+        )
 
 
 class CodexTabTests(unittest.TestCase):

@@ -1030,6 +1030,138 @@ class AccountServicesModuleTests(TempDirTestCase):
                 print_fn=lambda msg: None,
             )
 
+    def test_save_and_import_kilo_opencode_go_key_accounts_preserve_current_key(self):
+        with self.assertRaisesRegex(UserFacingError, "No active Kilo OpenCode Go key"):
+            account_services.save_kilo_key_account(
+                "alice",
+                entry_key="kilo://opencode-go",
+                read_kilo_key_entry=lambda: None,
+                write_account_file=lambda *args: "unused.json",
+                user_facing_error_cls=UserFacingError,
+            )
+
+        write_calls: list[tuple[str, str, str, list[dict]]] = []
+        result = account_services.save_kilo_key_account(
+            "alice",
+            entry_key="kilo://opencode-go",
+            read_kilo_key_entry=lambda: {"key": "kilo://opencode-go", "value": {"key": "oc_sk_current"}},
+            write_account_file=lambda name, kind, ext_label, entries: write_calls.append((name, kind, ext_label, entries)) or "alice.json",
+            user_facing_error_cls=UserFacingError,
+        )
+
+        self.assertEqual(result.path, "alice.json")
+        self.assertEqual(result.ext_label, "kilo-opencode-go")
+        self.assertEqual(
+            result.entries,
+            [{"key": "kilo://opencode-go", "value": {"key": "oc_sk_current"}}],
+        )
+        self.assertEqual(write_calls[0][1:3], ("kilo-key", "kilo-opencode-go"))
+
+        imported = account_services.import_kilo_key_account_data(
+            {"type": "api", "key": "  oc_sk_imported  "},
+            "imported",
+            entry_key="kilo://opencode-go",
+            from_kilo_key_import_format=lambda value: {"key": value["key"].strip()},
+            write_account_file=lambda *args: "imported.json",
+            user_facing_error_cls=UserFacingError,
+        )
+        self.assertEqual(imported.ext_label, "kilo-opencode-go")
+        self.assertEqual(
+            imported.entries,
+            [{"key": "kilo://opencode-go", "value": {"key": "oc_sk_imported"}}],
+        )
+
+        with self.assertRaisesRegex(UserFacingError, "API key is missing"):
+            account_services.import_kilo_key_account_data(
+                {},
+                "bad",
+                entry_key="kilo://opencode-go",
+                from_kilo_key_import_format=lambda value: (_ for _ in ()).throw(ValueError("API key is missing.")),
+                write_account_file=lambda *args: "unused.json",
+                user_facing_error_cls=UserFacingError,
+            )
+
+    def test_use_kilo_opencode_go_key_account_backs_up_and_replaces_both_stores(self):
+        backups: list[dict[str, object]] = []
+        replaced_keys: list[str] = []
+        messages: list[str] = []
+        events: list[str] = []
+
+        account_services.use_kilo_key_account(
+            "alice",
+            load_saved_account_data=lambda name, expected_kind=None: (
+                "alice.json",
+                {"entries": [{"key": "kilo://opencode-go", "value": {"key": "oc_sk_new"}}]},
+                "kilo-key",
+            ),
+            entry_key="kilo://opencode-go",
+            create_prewrite_backup=lambda **kwargs: (backups.append(kwargs), events.append("backup")),
+            replace_kilo_key=lambda key: (replaced_keys.append(key), events.append("replace")),
+            kilo_db_path="C:/Users/Test/.local/share/kilo/kilo.db",
+            kilo_auth_path="C:/Users/Test/.local/share/kilo/auth.json",
+            user_facing_error_cls=UserFacingError,
+            print_fn=messages.append,
+        )
+
+        self.assertEqual(
+            backups,
+            [{"include_kilo": True, "note": "before applying Kilo OpenCode Go key 'alice'"}],
+        )
+        self.assertEqual(replaced_keys, ["oc_sk_new"])
+        self.assertEqual(events, ["backup", "replace"])
+        self.assertNotIn("oc_sk_new", "\n".join(messages))
+        self.assertEqual(
+            messages[-1],
+            "[kilo-opencode-go] Written to C:/Users/Test/.local/share/kilo/kilo.db and C:/Users/Test/.local/share/kilo/auth.json",
+        )
+
+        with self.assertRaisesRegex(UserFacingError, "does not contain any Kilo OpenCode Go key"):
+            account_services.use_kilo_key_account(
+                "alice",
+                load_saved_account_data=lambda name, expected_kind=None: ("alice.json", {"entries": []}, "kilo-key"),
+                entry_key="kilo://opencode-go",
+                create_prewrite_backup=lambda **kwargs: None,
+                replace_kilo_key=lambda key: None,
+                kilo_db_path="kilo.db",
+                kilo_auth_path="auth.json",
+                user_facing_error_cls=UserFacingError,
+                print_fn=lambda msg: None,
+            )
+
+        with self.assertRaisesRegex(UserFacingError, "missing API key"):
+            account_services.use_kilo_key_account(
+                "alice",
+                load_saved_account_data=lambda name, expected_kind=None: (
+                    "alice.json",
+                    {"entries": [{"key": "kilo://opencode-go", "value": {}}]},
+                    "kilo-key",
+                ),
+                entry_key="kilo://opencode-go",
+                create_prewrite_backup=lambda **kwargs: None,
+                replace_kilo_key=lambda key: None,
+                kilo_db_path="kilo.db",
+                kilo_auth_path="auth.json",
+                user_facing_error_cls=UserFacingError,
+                print_fn=lambda msg: None,
+            )
+
+        with self.assertRaisesRegex(UserFacingError, "Kilo DB not found"):
+            account_services.use_kilo_key_account(
+                "alice",
+                load_saved_account_data=lambda name, expected_kind=None: (
+                    "alice.json",
+                    {"entries": [{"key": "kilo://opencode-go", "value": {"key": "oc_sk_new"}}]},
+                    "kilo-key",
+                ),
+                entry_key="kilo://opencode-go",
+                create_prewrite_backup=lambda **kwargs: None,
+                replace_kilo_key=lambda key: (_ for _ in ()).throw(ValueError("Kilo DB not found: kilo.db")),
+                kilo_db_path="kilo.db",
+                kilo_auth_path="auth.json",
+                user_facing_error_cls=UserFacingError,
+                print_fn=lambda msg: None,
+            )
+
     def test_import_ide_account_data_writes_selected_ide_entries(self):
         write_calls: list[tuple[str, str, str, list[dict]]] = []
 

@@ -4,12 +4,12 @@
 
 ![VSCode Account Manager](1.png)
 
-Windows GUI-утиліта для керування OpenAI OAuth-сесіями для Kilocode, Roo-Cline і Kilo New, обліковими даними OMP OpenAI, а також окремо для Codex.
-Вона читає та записує дані акаунтів, що зберігаються у `state.vscdb` (AES-256-GCM через Windows DPAPI), `~/.local/share/kilo/auth.json`, `~/.omp/agent/agent.db` та `~/.codex/auth.json`.
+Windows GUI-утиліта для керування OpenAI OAuth-сесіями для Kilocode, Roo-Cline і Kilo New, обліковими даними OMP OpenAI, API-ключем Kilo `opencode-go`, а також окремо для Codex.
+Вона читає та записує дані акаунтів, що зберігаються у `state.vscdb` (AES-256-GCM через Windows DPAPI), `~/.local/share/kilo/auth.json`, `~/.local/share/kilo/kilo.db`, `~/.omp/agent/agent.db` та `~/.codex/auth.json`.
 
 > [!IMPORTANT]
 > **Інструмент насамперед призначений для перемикання між збереженими OpenAI-акаунтами в підтримуваних клієнтах.**
-> Як провайдер авторизації підтримується лише OpenAI (`auth.openai.com`).
+> Як OAuth-провайдер підтримується лише OpenAI (`auth.openai.com`); ключ Kilo `opencode-go` керується окремо як звичайний API-ключ.
 
 
 ## Сценарії використання
@@ -54,6 +54,16 @@ OMP зберігає активні OpenAI OAuth-облікові дані в `~
 4. Вибрати збережений набір → **Use selected**, щоб замінити активний набір OMP OpenAI у `agent.db`.
 
 Збережений OMP-набір може містити кілька OpenAI-облікових даних. Імпорт приймає JSON-об'єкт або масив об'єктів; обов'язкові поля: `access_token` і `refresh_token`, необов'язкові: `account_id`, `email`, `expires` та `id_token` (`expires` може бути декодований із access token).
+
+**Керування API-ключем Kilo opencode-go**
+
+Kilo зберігає облікові дані провайдерів у `~/.local/share/kilo/kilo.db` (таблиця `credential`) і дублює їх у `~/.local/share/kilo/auth.json`:
+
+1. Відкрити вкладку **Kilo OpenCode Go**.
+2. Використати **Save current**, щоб зберегти активний ключ `opencode-go` з `kilo.db`, або **Import key**, щоб створити збережений ключ із звичайного тексту, JSON-рядка чи об'єкта `{"key": "..."}`.
+3. Вибрати збережений ключ → **Use selected**, щоб записати його в `kilo.db` і `auth.json`.
+
+Поточний ключ показується замаскованим. Для цього сценарію немає оновлення токенів або лімітів використання, бо Kilo зберігає `opencode-go` як звичайний API-ключ.
 
 **Імпорт IDE-акаунта з JSON**
 
@@ -117,7 +127,7 @@ python main.py
 
 `main.py` додає `src/` у `sys.path` і запускає Tk GUI.
 
-У застосунку є три вкладки: **IDE Accounts**, **OMP OpenAI** і **Codex**.
+У застосунку є чотири вкладки: **IDE Accounts**, **OMP OpenAI**, **Kilo OpenCode Go** і **Codex**.
 
 Перемикач **IDE** вгорі визначає, яку IDE GUI показує і куди застосовує зміни (VSCode / Antigravity).
 
@@ -172,6 +182,14 @@ python main.py
 - **Delete** — видалити збережений OMP-набір
 - **Reload** — перечитати поточний OMP-стан і збережені набори без зміни токенів
 
+Вкладка **Kilo OpenCode Go** надає:
+- **Use selected** — записати збережений ключ `opencode-go` у `~/.local/share/kilo/kilo.db` та `~/.local/share/kilo/auth.json`
+- **Save current** — зберегти активний ключ `opencode-go` з `kilo.db`
+- **Import key** — створити збережений ключ із JSON-рядка або об'єкта з полем `key`
+- **Rename** — перейменувати збережений профіль ключа
+- **Delete** — видалити збережений профіль ключа
+- **Reload** — перечитати поточний ключ і збережені профілі без змін
+
 ### Нотатки
 
 - Обирайте **VSCode** або **Antigravity** у верхній частині вкладки **IDE Accounts**.
@@ -181,6 +199,7 @@ python main.py
 - Збережені акаунти лежать у локальній директорії `accounts/`.
 - Перед записом у IDE/Kilo New/Codex застосунок автоматично створює ZIP-бекап файлів, які будуть змінені.
 - Перед записом в OMP-сховище застосунок автоматично створює ZIP-бекап `agent.db` і наявних SQLite-файлів WAL/SHM.
+- Перед застосуванням ключа **Kilo OpenCode Go** застосунок створює pre-write ZIP-бекап `auth.json`. `auth.json` записується атомарно, ключ записується в `kilo.db` однією SQLite-транзакцією, а `auth.json` відновлюється, якщо запис у DB не вдався.
 - `Full backup` показує warning лише коли відсутні required-файли поточної IDE, інші відсутні сховища рахує як skipped/optional, і падає, якщо не існує жодного target-файлу.
 - Auto-refresh не чіпає saved snapshots, які вже прострочені.
 - **Renew tokens** оновлює тільки збережений профіль, доки ви не застосуєте його назад через **Use selected**.
@@ -189,6 +208,8 @@ python main.py
 `Kilo New` завжди читається і записується через `~/.local/share/kilo/auth.json`, і цей файл використовується Kilo New як у VSCode, так і в Antigravity.
 
 OMP OpenAI завжди читає і записує `~/.omp/agent/agent.db`. Застосування збереженого OMP-набору замінює активний набір OpenAI-облікових даних у цій базі.
+
+Вкладка **Kilo OpenCode Go** читає активний ключ `opencode-go` з `~/.local/share/kilo/kilo.db` і записує його в `kilo.db` та його дзеркало `~/.local/share/kilo/auth.json`. Інші облікові дані провайдерів не змінюються.
 
 Codex навмисно ізольований від IDE-перемикань. Сценарій `IDE -> Codex` не підтримується.
 
@@ -199,6 +220,7 @@ Codex навмисно ізольований від IDE-перемикань. �
 | VSCode секрети | `%APPDATA%\Code\User\globalStorage\state.vscdb` |
 | Antigravity секрети | `%APPDATA%\Antigravity\User\globalStorage\state.vscdb` |
 | Kilo New авторизація | `~/.local/share/kilo/auth.json` |
+| Kilo облікові дані провайдерів | `~/.local/share/kilo/kilo.db` (таблиця `credential`) |
 | OMP OpenAI база | `~/.omp/agent/agent.db` (і необов'язкові файли `-wal` / `-shm`) |
 | Codex авторизація | `~/.codex/auth.json` |
 | Збережені профілі акаунтів | `accounts/*.json` |

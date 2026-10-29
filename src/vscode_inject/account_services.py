@@ -492,6 +492,55 @@ def save_omp_openai_account(
     )
 
 
+def save_kilo_key_account(
+    name: str,
+    *,
+    entry_key: str,
+    read_kilo_key_entry,
+    write_account_file,
+    user_facing_error_cls,
+) -> SavedAccountWriteResult:
+    entry = read_kilo_key_entry()
+    if not entry:
+        raise user_facing_error_cls("No active Kilo OpenCode Go key found in kilo.db.")
+    return _build_saved_account_write_result(
+        name,
+        "kilo-key",
+        "kilo-opencode-go",
+        [entry],
+        write_account_file=write_account_file,
+        user_facing_error_cls=user_facing_error_cls,
+    )
+
+
+def import_kilo_key_account_data(
+    data: Any,
+    name: str,
+    *,
+    entry_key: str,
+    from_kilo_key_import_format,
+    write_account_file,
+    user_facing_error_cls,
+) -> SavedAccountWriteResult:
+    try:
+        value = from_kilo_key_import_format(data)
+    except ValueError as exc:
+        raise user_facing_error_cls(f"ERROR: {exc}") from exc
+
+    key = value.get("key") if isinstance(value, Mapping) else None
+    if not isinstance(key, str) or not key:
+        raise user_facing_error_cls("ERROR: API key is missing.")
+
+    return _build_saved_account_write_result(
+        name,
+        "kilo-key",
+        "kilo-opencode-go",
+        [{"key": entry_key, "value": {"key": key}}],
+        write_account_file=write_account_file,
+        user_facing_error_cls=user_facing_error_cls,
+    )
+
+
 def _normalize_omp_import_items(data: Any, *, user_facing_error_cls) -> list[dict[str, Any]]:
     if isinstance(data, list):
         if not data:
@@ -1014,6 +1063,40 @@ def use_omp_openai_account(
     print_fn(f"  credentials: {len(entries)}")
     if account_ids:
         print_fn(f"  accountIds: {', '.join(account_ids)}")
+
+
+def use_kilo_key_account(
+    name: str,
+    *,
+    load_saved_account_data,
+    entry_key: str,
+    create_prewrite_backup,
+    replace_kilo_key,
+    kilo_db_path: str,
+    kilo_auth_path: str,
+    user_facing_error_cls,
+    print_fn: Callable[[str], None] = print,
+) -> None:
+    _path, account_data, _kind = load_saved_account_data(name, expected_kind="kilo-key")
+    raw_entries = account_data.get("entries", []) if isinstance(account_data, dict) else []
+    entries = [entry for entry in raw_entries if isinstance(entry, dict) and entry.get("key") == entry_key]
+    if not entries:
+        raise user_facing_error_cls(f"Account '{name}' does not contain any Kilo OpenCode Go key.")
+
+    value = entries[0].get("value")
+    key = value.get("key") if isinstance(value, Mapping) else None
+    if not isinstance(key, str) or not key.strip():
+        raise user_facing_error_cls(f"Account '{name}' is missing API key.")
+    key = key.strip()
+
+    create_prewrite_backup(include_kilo=True, note=f"before applying Kilo OpenCode Go key '{name}'")
+    print_fn("")
+
+    try:
+        replace_kilo_key(key)
+    except ValueError as exc:
+        raise user_facing_error_cls(f"ERROR: {exc}") from exc
+    print_fn(f"[kilo-opencode-go] Written to {kilo_db_path} and {kilo_auth_path}")
 
 
 def import_codex_account(

@@ -221,6 +221,12 @@ class OAuthRefreshTests(unittest.TestCase):
         self.assertEqual(len(refreshable), 1)
         self.assertEqual(refreshable[0].provider, refresh.OPENAI_CODEX_PROVIDER)
         self.assertEqual(refreshable[0].bundle.refresh_token, "refresh-1")
+        self.assertEqual(
+            refresh.collect_refreshable_entries(
+                [{"key": "kilo://opencode-go", "value": {"key": "oc_sk_1"}}]
+            ),
+            [],
+        )
 
         records = refresh.saved_account_records(
             [

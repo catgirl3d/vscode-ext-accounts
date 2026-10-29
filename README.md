@@ -4,12 +4,12 @@
 
 ![VSCode Account Manager](1.png)
 
-A Windows GUI utility for managing OpenAI OAuth sessions for Kilocode, Roo-Cline, and Kilo New, OMP OpenAI credentials, and standalone Codex.
-It reads and writes account data stored in `state.vscdb` (AES-256-GCM via Windows DPAPI), `~/.local/share/kilo/auth.json`, `~/.omp/agent/agent.db`, and `~/.codex/auth.json`.
+A Windows GUI utility for managing OpenAI OAuth sessions for Kilocode, Roo-Cline, and Kilo New, OMP OpenAI credentials, the Kilo `opencode-go` API key, and standalone Codex.
+It reads and writes account data stored in `state.vscdb` (AES-256-GCM via Windows DPAPI), `~/.local/share/kilo/auth.json`, `~/.local/share/kilo/kilo.db`, `~/.omp/agent/agent.db`, and `~/.codex/auth.json`.
 
 > [!IMPORTANT]
 > **Built mainly for switching saved OpenAI accounts across supported clients.**
-> Only OpenAI (`auth.openai.com`) is supported as the auth provider.
+> Only OpenAI (`auth.openai.com`) is supported as an OAuth provider; the Kilo `opencode-go` key is managed separately as a plain API key.
 
 
 ## Use Cases
@@ -54,6 +54,16 @@ OMP keeps its active OpenAI OAuth credentials in `~/.omp/agent/agent.db`:
 4. Select a saved set → **Use selected** to replace the active OMP OpenAI credential set in `agent.db`.
 
 An OMP saved set may contain multiple OpenAI credentials. Import accepts a JSON object or an array of objects; required fields are `access_token` and `refresh_token`, while `account_id`, `email`, `expires`, and `id_token` are optional (`expires` can be decoded from the access token).
+
+**Manage the Kilo opencode-go API key**
+
+Kilo keeps provider credentials in `~/.local/share/kilo/kilo.db` (`credential` table) and mirrors them to `~/.local/share/kilo/auth.json`:
+
+1. Open the **Kilo OpenCode Go** tab.
+2. Use **Save current** to snapshot the active `opencode-go` key from `kilo.db`, or **Import key** to create a saved key from plain text, a JSON string, or a `{"key": "..."}` object.
+3. Select a saved key → **Use selected** to write it to both `kilo.db` and `auth.json`.
+
+The current key is shown masked. This flow has no token refresh or usage limits because Kilo stores `opencode-go` as a plain API key.
 
 **Import an IDE account from JSON**
 
@@ -117,7 +127,7 @@ python main.py
 
 `main.py` bootstraps `src/` into `sys.path` and launches the Tk GUI.
 
-The app has three tabs: **IDE Accounts**, **OMP OpenAI**, and **Codex**.
+The app has four tabs: **IDE Accounts**, **OMP OpenAI**, **Kilo OpenCode Go**, and **Codex**.
 
 The **IDE** selector at the top chooses which IDE the GUI shows and targets (VSCode / Antigravity).
 
@@ -172,6 +182,14 @@ The **OMP OpenAI** tab provides:
 - **Delete** — remove a saved OMP account set
 - **Reload** — reread current OMP state and saved sets without modifying tokens
 
+The **Kilo OpenCode Go** tab provides:
+- **Use selected** — write a saved `opencode-go` key to `~/.local/share/kilo/kilo.db` and `~/.local/share/kilo/auth.json`
+- **Save current** — save the active `opencode-go` key from `kilo.db`
+- **Import key** — create a saved key from a JSON string or an object with a `key` field
+- **Rename** — rename a saved key profile
+- **Delete** — remove a saved key profile
+- **Reload** — reread the current key and saved profiles without modifying anything
+
 ### Notes
 
 - Choose **VSCode** or **Antigravity** at the top of **IDE Accounts**.
@@ -181,6 +199,7 @@ The **OMP OpenAI** tab provides:
 - Saved accounts are stored in the local `accounts/` directory.
 - Before the app writes to IDE/Kilo New/Codex storage, it creates an automatic pre-write ZIP backup of the affected files.
 - Before the app writes to OMP storage, it creates an automatic pre-write ZIP backup of `agent.db` and its SQLite WAL/SHM sidecar files when present.
+- Before the app applies a **Kilo OpenCode Go** key, it creates a pre-write ZIP backup of `auth.json`. `auth.json` is written atomically, the key is then written to `kilo.db` in a single SQLite transaction, and `auth.json` is restored if the DB write fails.
 - `Full backup` warns only when required files for the current IDE are missing, reports other absent storages as skipped/optional, and fails if no target files exist at all.
 - Auto-refresh does not touch saved profiles that already contain expired tokens.
 - **Renew tokens** updates only the saved profile until you apply it back with **Use selected**.
@@ -189,6 +208,8 @@ The **OMP OpenAI** tab provides:
 `Kilo New` always reads from and writes to `~/.local/share/kilo/auth.json`, and that file is used by Kilo New in both VSCode and Antigravity.
 
 OMP OpenAI reads from and writes to `~/.omp/agent/agent.db`. Applying a saved OMP set replaces the active OpenAI credential set in that database.
+
+The **Kilo OpenCode Go** tab reads the active `opencode-go` key from `~/.local/share/kilo/kilo.db` and writes it to both `kilo.db` and its `~/.local/share/kilo/auth.json` mirror. It does not touch other provider credentials.
 
 Codex is intentionally isolated from IDE account switching. `IDE -> Codex` import/apply is not supported.
 
@@ -199,6 +220,7 @@ Codex is intentionally isolated from IDE account switching. `IDE -> Codex` impor
 | VSCode secrets | `%APPDATA%\Code\User\globalStorage\state.vscdb` |
 | Antigravity secrets | `%APPDATA%\Antigravity\User\globalStorage\state.vscdb` |
 | Kilo New auth | `~/.local/share/kilo/auth.json` |
+| Kilo provider credentials | `~/.local/share/kilo/kilo.db` (`credential` table) |
 | OMP OpenAI database | `~/.omp/agent/agent.db` (plus optional `-wal` / `-shm` files) |
 | Codex auth | `~/.codex/auth.json` |
 | Saved account profiles | `accounts/*.json` |

@@ -215,18 +215,22 @@ class SavedAccountsTests(TempDirTestCase):
 class SavedAccountsModuleTests(TempDirTestCase):
     codex_key = "codex://auth"
     omp_key = "omp://openai"
+    kilo_key = "kilo://opencode-go"
 
     def test_saved_account_kind_listing_and_filters(self):
         accounts_dir = self.root / "accounts"
         self.write_json(accounts_dir / "ide.json", {"kind": "ide", "entries": [{"key": "secret://ide", "value": {}}]})
         self.write_json(accounts_dir / "codex.json", {"entries": [{"key": self.codex_key, "value": {}}]})
         self.write_json(accounts_dir / "omp.json", {"entries": [{"key": self.omp_key, "value": {}}]})
+        self.write_json(accounts_dir / "kilo.json", {"kind": "kilo-key", "entries": [{"key": self.kilo_key, "value": {"key": "oc_sk_1"}}]})
         self.write_text(accounts_dir / "broken.json", "{")
-        kind_keys = {"codex": self.codex_key, "omp": self.omp_key}
+        kind_keys = {"codex": self.codex_key, "omp": self.omp_key, "kilo-key": self.kilo_key}
 
         self.assertEqual(saved_accounts.saved_account_kind({"kind": "codex"}, self.codex_key), "codex")
+        self.assertEqual(saved_accounts.saved_account_kind({"kind": "kilo-key"}, kind_keys), "kilo-key")
         self.assertEqual(saved_accounts.saved_account_kind({"entries": [{"key": self.codex_key}]}, self.codex_key), "codex")
         self.assertEqual(saved_accounts.saved_account_kind({"entries": [{"key": self.omp_key}]}, kind_keys), "omp")
+        self.assertEqual(saved_accounts.saved_account_kind({"entries": [{"key": self.kilo_key}]}, kind_keys), "kilo-key")
         self.assertEqual(saved_accounts.saved_account_kind({"entries": [{"key": "other"}]}, self.codex_key), "ide")
 
         records = saved_accounts.list_saved_accounts(str(accounts_dir), kind_keys)
@@ -238,6 +242,8 @@ class SavedAccountsModuleTests(TempDirTestCase):
         self.assertEqual(by_name["codex"]["kind"], "codex")
         self.assertTrue(by_name["omp"]["readable"])
         self.assertEqual(by_name["omp"]["kind"], "omp")
+        self.assertTrue(by_name["kilo"]["readable"])
+        self.assertEqual(by_name["kilo"]["kind"], "kilo-key")
         self.assertFalse(by_name["broken"]["readable"])
         self.assertIsNone(by_name["broken"]["kind"])
         self.assertIsNone(by_name["broken"]["data"])
@@ -253,6 +259,10 @@ class SavedAccountsModuleTests(TempDirTestCase):
         self.assertEqual(
             [record["name"] for record in saved_accounts.list_saved_accounts(str(accounts_dir), kind_keys, kind="omp")],
             ["omp"],
+        )
+        self.assertEqual(
+            [record["name"] for record in saved_accounts.list_saved_accounts(str(accounts_dir), kind_keys, kind="kilo-key")],
+            ["kilo"],
         )
 
     def test_load_saved_account_and_write_account_file_validate_kinds(self):

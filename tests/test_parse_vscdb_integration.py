@@ -47,6 +47,41 @@ def oauth_key(ext_id: str) -> str:
     return f'secret://{{"extensionId":"{ext_id}","key":"{db.OAUTH_KEY}"}}'
 
 
+def create_kilo_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path)
+    try:
+        con.execute(
+            """
+            CREATE TABLE credential (
+                id text PRIMARY KEY,
+                integration_id text,
+                label text NOT NULL,
+                value text NOT NULL,
+                connector_id text,
+                method_id text,
+                active integer,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO credential(id, integration_id, label, value, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "cred-opencode",
+                "opencode-go",
+                "Imported",
+                json.dumps({"type": "key", "key": "oc_sk_current"}),
+                1,
+                1,
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
 class ParseVscdbIntegrationTests(unittest.TestCase):
     maxDiff = None
 
@@ -935,6 +970,57 @@ class ParseVscdbIntegrationTests(unittest.TestCase):
                 },
             ],
         )
+
+    def test_kilo_opencode_go_key_round_trip_reads_db_and_writes_both_stores(self):
+        kilo_dir = self.root / "kilo"
+        db_path = kilo_dir / "kilo.db"
+        auth_path = kilo_dir / "auth.json"
+        accounts_dir = self.root / "accounts"
+        create_kilo_db(db_path)
+        self.write_json(
+            auth_path,
+            {
+                "openai": {"type": "oauth", "access": "access-1", "refresh": "refresh-1", "expires": 1},
+                "opencode-go": {"type": "api", "key": "oc_sk_current"},
+            },
+        )
+        self.patch_db("KILO_DB_PATH", str(db_path))
+        self.patch_db("KILO_AUTH_PATH", str(auth_path))
+        self.patch_db("ACCOUNTS_DIR", str(accounts_dir))
+        self.patch_db("PROJECT_ROOT", str(self.root))
+
+        self.assertEqual(
+            db.read_current_kilo_key_entry(),
+            {"key": db.KILO_OPENCODE_GO_KEY, "value": {"key": "oc_sk_current"}},
+        )
+
+        self.capture_output(db.save_kilo_key_account, "alice")
+        saved_data = json.loads((accounts_dir / "alice.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved_data["kind"], "kilo-key")
+        self.assertEqual(saved_data["ext"], "kilo-opencode-go")
+        self.assertEqual(saved_data["entries"], [{"key": db.KILO_OPENCODE_GO_KEY, "value": {"key": "oc_sk_current"}}])
+
+        self.capture_output(db.import_kilo_key_account_from_json_string, '"oc_sk_new"', "new")
+        self.capture_output(db.use_kilo_key_account, "new")
+
+        con = sqlite3.connect(db_path)
+        try:
+            row = con.execute("SELECT value FROM credential WHERE integration_id = 'opencode-go'").fetchone()
+        finally:
+            con.close()
+        self.assertEqual(json.loads(row[0]), {"type": "key", "key": "oc_sk_new"})
+        auth = json.loads(auth_path.read_text(encoding="utf-8"))
+        self.assertEqual(auth["opencode-go"], {"type": "api", "key": "oc_sk_new"})
+        self.assertEqual(auth["openai"], {"type": "oauth", "access": "access-1", "refresh": "refresh-1", "expires": 1})
+
+    def test_import_kilo_key_account_accepts_raw_key_text(self):
+        accounts_dir = self.root / "accounts"
+        self.patch_db("ACCOUNTS_DIR", str(accounts_dir))
+
+        self.capture_output(db.import_kilo_key_account_from_json_string, "oc_sk_raw", "raw")
+
+        saved_data = json.loads((accounts_dir / "raw.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved_data["entries"], [{"key": db.KILO_OPENCODE_GO_KEY, "value": {"key": "oc_sk_raw"}}])
 
     def test_import_and_append_omp_openai_account_from_json_string_manage_multi_account_saved_set(self):
         accounts_dir = self.root / "accounts"

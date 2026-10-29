@@ -69,6 +69,18 @@ OMP_OPENAI_IMPORT_EXAMPLE = (
     "  }\n"
     "]"
 )
+KILO_KEY_IMPORT_HINT = (
+    'Paste the opencode-go API key as plain text, a JSON string, or an object with a "key" field.'
+)
+KILO_KEY_IMPORT_EXAMPLE = (
+    '"oc_sk_..."\n'
+    "\n"
+    "or\n"
+    "\n"
+    "{\n"
+    '  "key": "oc_sk_..."\n'
+    "}"
+)
 
 
 def current_time_ms():
@@ -119,6 +131,17 @@ class SavedAccountTreeRow:
     tags: tuple[str, ...]
     search_email: str = ""
     search_account_id: str = ""
+    search_key: str = ""
+
+
+def mask_api_key(key) -> str:
+    if not isinstance(key, str) or not key:
+        return "-"
+    if len(key) <= 8:
+        return "*" * len(key)
+    if len(key) <= 16:
+        return key[:2] + "..." + key[-2:]
+    return key[:8] + "..." + key[-4:]
 
 
 def format_saved_at(data):
@@ -818,6 +841,16 @@ def ask_omp_openai_append_import(services: GuiServices, target_name: str) -> tup
     ).show()
 
 
+def ask_kilo_key_import(services: GuiServices) -> tuple[str, str] | None:
+    return JsonAccountImportDialog(
+        services,
+        title="Import Kilo OpenCode Go Key",
+        name_label="Saved key name:",
+        hint_text=KILO_KEY_IMPORT_HINT,
+        example_text=KILO_KEY_IMPORT_EXAMPLE,
+    ).show()
+
+
 def delete_saved_account(db_module, name, *, expected_kind: str | None = None):
     if expected_kind:
         db_module.delete_saved_account(name, expected_kind=expected_kind)
@@ -892,6 +925,10 @@ class SavedAccountsTreeTab:
     selection_empty_message: str | None = None
     rename_dialog_title: str | None = None
     supports_export: bool = False
+    search_options: tuple[tuple[str, str], ...] = (
+        ("Email", "search_email"),
+        ("Account ID", "search_account_id"),
+    )
 
     def _initialize_saved_account_view_state(self):
         self._saved_account_rows: list[SavedAccountTreeRow] = []
@@ -943,11 +980,11 @@ class SavedAccountsTreeTab:
             fg="#6c7086",
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(0, 8))
-        self.search_by_var = tk.StringVar(value="Email")
+        self.search_by_var = tk.StringVar(value=self.search_options[0][0])
         self.search_by_combo = ttk.Combobox(
             search_frame,
             textvariable=self.search_by_var,
-            values=("Email", "Account ID"),
+            values=tuple(label for label, _attr in self.search_options),
             state="readonly",
             style="Search.TCombobox",
             width=12,
@@ -983,7 +1020,11 @@ class SavedAccountsTreeTab:
         self._render_saved_account_tree()
 
     def _row_matches_search(self, row: SavedAccountTreeRow, search_text: str) -> bool:
-        search_value = row.search_account_id if self.search_by_var.get() == "Account ID" else row.search_email
+        search_attr = next(
+            (attr for label, attr in self.search_options if label == self.search_by_var.get()),
+            "search_email",
+        )
+        search_value = getattr(row, search_attr, "")
         return search_text in search_value.casefold()
 
     def _sorted_saved_account_rows(self, rows: Sequence[SavedAccountTreeRow]) -> list[SavedAccountTreeRow]:
@@ -1949,4 +1990,161 @@ class OmpOpenAITab(SavedAccountsTreeTab):
             self.services.db.use_omp_openai_account,
             name,
             success_msg=f"Switched OMP OpenAI to '{name}'",
+        )
+
+
+class KiloOpenCodeGoTab(SavedAccountsTreeTab):
+    expected_kind = "kilo-key"
+    selection_empty_message = "Select a Kilo OpenCode Go key first."
+    rename_dialog_title = "Rename Kilo OpenCode Go key"
+    search_options = (("Key", "search_key"),)
+
+    def __init__(self, notebook: ttk.Notebook, services: GuiServices):
+        self.services = services
+        self.frame = tk.Frame(notebook, bg=services.bg)
+        notebook.add(self.frame, text="Kilo OpenCode Go")
+        self._build()
+
+    def _build(self):
+        bg = self.services.bg
+        fg = self.services.fg
+        section_label_font = ("Segoe UI", 9, "bold")
+        current_value_width = max_text_width_px(
+            ("Segoe UI", 9),
+            ["-", mask_api_key("oc_sk_12345678901234567890")],
+        ) + 20
+
+        header = tk.Frame(self.frame, bg=bg, pady=3)
+        header.pack(fill="x", padx=10)
+        header.grid_columnconfigure(0, weight=0)
+        header.grid_columnconfigure(1, weight=1)
+
+        current_card = section_card(header, self.services)
+        current_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        current_card.grid_columnconfigure(0, minsize=current_value_width)
+        tk.Label(current_card, text="Current key", bg=SECTION_BG, fg="#6c7086", font=section_label_font).grid(row=0, column=0, sticky="w")
+        self.current_value = tk.Label(
+            current_card,
+            text="-",
+            bg=self.services.btn_bg,
+            fg="#6c7086",
+            font=("Segoe UI", 9),
+            anchor="w",
+            padx=6,
+            pady=2,
+        )
+        self.current_value.grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        db_card = section_card(header, self.services)
+        db_card.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        tk.Label(db_card, text="Kilo DB", bg=SECTION_BG, fg="#6c7086", font=section_label_font).pack(anchor="w")
+        tk.Label(
+            db_card,
+            text=self.services.db.KILO_DB_PATH,
+            bg=SECTION_BG,
+            fg=fg,
+            justify="left",
+            anchor="w",
+            wraplength=560,
+            font=("Segoe UI", 9),
+        ).pack(fill="x", pady=(4, 0))
+
+        self._build_saved_account_tree(
+            (
+                SavedAccountTreeColumn("name", "Name", ACCOUNT_TREE_NAME_WIDTH, anchor="w"),
+                SavedAccountTreeColumn("key", "Key", ACCOUNT_TREE_EMAIL_WIDTH),
+                SavedAccountTreeColumn("saved", "Saved", ACCOUNT_TREE_SAVED_WIDTH),
+                SavedAccountTreeColumn("active", "Active", ACCOUNT_TREE_ACTIVE_WIDTH),
+            )
+        )
+
+        self._build_saved_account_actions(
+            (
+                SavedAccountActionButton("▶ Use selected", "on_use", accent=True),
+                SavedAccountActionButton("💾 Save current", "on_save"),
+                SavedAccountActionButton("📥 Import key", "on_import_new"),
+                SavedAccountActionButton("✏ Rename", "on_rename", separator_before=True),
+                SavedAccountActionButton("🗑 Delete", "on_delete"),
+                SavedAccountActionButton("⟳ Reload", "on_refresh", separator_before=True),
+            )
+        )
+
+    def update_current_label(self, entry):
+        value = entry.get("value") if isinstance(entry, dict) else None
+        key = value.get("key") if isinstance(value, dict) else None
+        if isinstance(key, str) and key:
+            self.current_value.config(text=mask_api_key(key), fg=SUCCESS_GREEN)
+        else:
+            self.current_value.config(text="-", fg="#6c7086")
+
+    def _load_current_state(self):
+        try:
+            return self.services.db.read_current_kilo_key_entry()
+        except Exception as exc:
+            self.services.set_status(f"Cannot read Kilo DB: {exc}", False)
+            return None
+
+    def _build_saved_account_row(self, record: dict, current_entry) -> SavedAccountTreeRow | None:
+        name = record["name"]
+        data = record["data"]
+        entries = data.get("entries", [])
+        key_entries = [entry for entry in entries if entry.get("key") == self.services.db.KILO_OPENCODE_GO_KEY]
+        if not key_entries:
+            return None
+
+        value = key_entries[0].get("value")
+        key = value.get("key") if isinstance(value, dict) else None
+        if not isinstance(key, str) or not key:
+            return None
+
+        current_value = current_entry.get("value") if isinstance(current_entry, dict) else None
+        current_key = current_value.get("key") if isinstance(current_value, dict) else None
+        active = "active" if current_key == key else "-"
+        return SavedAccountTreeRow(
+            iid=name,
+            values=(name, mask_api_key(key), format_saved_at(data), active),
+            tags=(),
+            search_key=key,
+        )
+
+    def refresh(self):
+        self._present_saved_account_tree(
+            "kilo-key",
+            load_current_state=self._load_current_state,
+            update_current_state=self.update_current_label,
+            build_row=self._build_saved_account_row,
+        )
+
+    def on_save(self):
+        name = ask_account_name(self.services.root, "Save Kilo OpenCode Go key", "Key name:")
+        if not name:
+            return
+        self.services.run_guarded(
+            self.services.db.save_kilo_key_account,
+            name,
+            success_msg=f"Saved Kilo OpenCode Go key '{name}'",
+        )
+
+    def on_import_new(self):
+        import_data = ask_kilo_key_import(self.services)
+        if not import_data:
+            return
+        name, json_text = import_data
+        self.services.run_guarded(
+            self.services.db.import_kilo_key_account_from_json_string,
+            json_text,
+            name,
+            success_msg=f"Imported Kilo OpenCode Go key '{name}'",
+        )
+
+    def on_use(self):
+        name = self.selected_saved_account_name()
+        if not name:
+            return
+        if not messagebox.askyesno("Switch Kilo OpenCode Go key", f"Apply Kilo OpenCode Go key '{name}' to kilo.db and auth.json?"):
+            return
+        self.services.run_guarded(
+            self.services.db.use_kilo_key_account,
+            name,
+            success_msg=f"Switched Kilo OpenCode Go to '{name}'",
         )

@@ -16,6 +16,7 @@ from . import account_services
 from . import backups
 from . import codex_accounts as codex_store
 from . import ide_context
+from . import kilo_key_accounts as kilo_key_store
 from . import kilo_new_accounts
 from . import omp_openai_accounts as omp_store
 from . import oauth_refresh
@@ -331,7 +332,9 @@ CODEX_AUTH_PATH = os.path.join(os.path.expanduser("~"), ".codex", "auth.json")
 CODEX_KEY = "codex://openai"
 OMP_AGENT_DB_PATH = os.path.join(os.path.expanduser("~"), ".omp", "agent", "agent.db")
 OMP_OPENAI_KEY = oauth_refresh.OMP_OPENAI_KEY
-SPECIAL_KIND_KEYS = {"codex": CODEX_KEY, "omp": OMP_OPENAI_KEY}
+KILO_DB_PATH = os.path.join(os.path.expanduser("~"), ".local", "share", "kilo", "kilo.db")
+KILO_OPENCODE_GO_KEY = kilo_key_store.KILO_OPENCODE_GO_KEY
+SPECIAL_KIND_KEYS = {"codex": CODEX_KEY, "omp": OMP_OPENAI_KEY, "kilo-key": KILO_OPENCODE_GO_KEY}
 
 IDE_EXTENSIONS = {
     "both": None,
@@ -530,6 +533,14 @@ def _replace_omp_openai_credentials(entries: Sequence[Mapping[str, object]]) -> 
     omp_store.replace_openai_credentials(OMP_AGENT_DB_PATH, entries)
 
 
+def read_current_kilo_key_entry() -> dict | None:
+    return kilo_key_store.read_current_entry(KILO_DB_PATH, KILO_OPENCODE_GO_KEY)
+
+
+def _replace_kilo_key(key: str) -> None:
+    kilo_key_store.replace_key(KILO_DB_PATH, KILO_AUTH_PATH, key)
+
+
 def get_kilo_new_fingerprint() -> str | None:
     return kilo_new_accounts.get_kilo_new_fingerprint(KILO_AUTH_PATH)
 
@@ -709,6 +720,52 @@ def save_omp_openai_account(name: str):
     )
     print(f"Account '{name}' saved [{result.ext_label}] ->{result.path}")
     _print_saved_entries(result.entries)
+
+
+def save_kilo_key_account(name: str):
+    result = account_services.save_kilo_key_account(
+        name,
+        entry_key=KILO_OPENCODE_GO_KEY,
+        read_kilo_key_entry=read_current_kilo_key_entry,
+        write_account_file=_write_account_file,
+        user_facing_error_cls=UserFacingError,
+    )
+    print(f"Account '{name}' saved [{result.ext_label}] ->{result.path}")
+    _print_saved_entries(result.entries)
+
+
+def use_kilo_key_account(name: str):
+    account_services.use_kilo_key_account(
+        name,
+        load_saved_account_data=_load_saved_account_data,
+        entry_key=KILO_OPENCODE_GO_KEY,
+        create_prewrite_backup=create_prewrite_backup,
+        replace_kilo_key=_replace_kilo_key,
+        kilo_db_path=KILO_DB_PATH,
+        kilo_auth_path=KILO_AUTH_PATH,
+        user_facing_error_cls=UserFacingError,
+    )
+
+
+def import_kilo_key_account_from_json_string(json_str: str, name: str):
+    text = json_str.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        if text and text[0] not in '{["':
+            data = text
+        else:
+            raise UserFacingError(f"ERROR: invalid JSON: {exc}") from exc
+
+    result = account_services.import_kilo_key_account_data(
+        data,
+        name,
+        entry_key=KILO_OPENCODE_GO_KEY,
+        from_kilo_key_import_format=kilo_key_store.from_import_format,
+        write_account_file=_write_account_file,
+        user_facing_error_cls=UserFacingError,
+    )
+    print(f"Imported Kilo OpenCode Go key '{name}' [{result.ext_label}] -> {result.path}")
 
 
 def refresh_saved_account(name: str, expected_kind: str | None = None) -> str:

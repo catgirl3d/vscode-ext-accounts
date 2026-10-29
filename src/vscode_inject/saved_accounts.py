@@ -164,7 +164,7 @@ def _normalize_kind_keys(kind_keys: str | Mapping[str, str] | None) -> dict[str,
 
 def saved_account_kind(data: dict, kind_keys: str | Mapping[str, str] | None) -> str:
     kind = data.get("kind") if isinstance(data, dict) else None
-    if kind in {"ide", "codex", "omp"}:
+    if kind in {"ide", "codex", "omp", "kilo-key"}:
         return kind
 
     entries = data.get("entries", []) if isinstance(data, dict) else []

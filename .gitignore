@@ -13,3 +13,7 @@ vscdb_backup_*.json
 .vscode/settings.json
 
 backups/*
+.kilo/package-lock.json
+.kilo/*
+build/*
+temp/*

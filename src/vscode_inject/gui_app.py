@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from . import parse_vscdb as db
 from . import refresh_scheduler
-from .gui_tabs import CodexTab, GuiServices, IdeAccountsTab, OmpOpenAITab, SUCCESS_GREEN
+from .gui_tabs import CodexTab, GuiServices, IdeAccountsTab, KiloOpenCodeGoTab, OmpOpenAITab, SUCCESS_GREEN
 
 
 WINDOW_WIDTH = 500
@@ -249,6 +249,7 @@ def main():
     ide_tab = IdeAccountsTab(notebook, services)
     codex_tab = CodexTab(notebook, services)
     omp_tab = OmpOpenAITab(notebook, services)
+    kilo_key_tab = KiloOpenCodeGoTab(notebook, services)
     auto_scheduler = refresh_scheduler.AutoRefreshScheduler(
         list_saved_accounts=db.list_saved_accounts,
         write_saved_account_batch=write_saved_account_mapping_batch,
@@ -261,6 +262,7 @@ def main():
         ide_tab.refresh()
         codex_tab.refresh()
         omp_tab.refresh()
+        kilo_key_tab.refresh()
 
     def request_auto_refresh():
         started = start_auto_refresh_worker(auto_refresh_queue, auto_scheduler, auto_refresh_state)
